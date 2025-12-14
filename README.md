@@ -1,144 +1,62 @@
 # ServizioAntiCopieMultiple
 
-**Servizio Windows** in C# (.NET 10.0) per monitorare i lavori di stampa e impedire la stampa di più copie dello stesso documento, invitando l’utente a utilizzare la fotocopiatrice per duplicazioni multiple.
-
-Il progetto è open source e distribuito con **licenza CC BY-NC-SA 4.0**, ma l’uso commerciale è vietato e va sempre attribuito l’autore originale: **Nicola Cantalupo**.
+**Servizio Windows** in C# (.NET 10.0) per monitorare i lavori di stampa e impedire la stampa di più copie dello stesso documento.
 
 ---
 
-## ⚡ Funzionalità principali
-- Monitoraggio continuo delle stampanti Windows.
-- Identificazione automatica dei lavori di stampa con più copie.
-- Blocco automatico dei job non conformi.
-- Notifica all’utente tramite popup o log di sistema.
-- Logging dettagliato delle attività del servizio.
-- Configurabile tramite `appsettings.json`.
-- Possibilità di personalizzare e modificare il codice.
+## Distribuzione e release
+
+Le release pubblicate contengono due eseguibili nella stessa cartella:
+- `ServizioAntiCopieMultiple.exe` — il servizio Windows
+- `gestionesacm.exe` — tool console per installare/avviare/fermare/disinstallare il servizio
+
+Per semplificare l'uso all'utente finale i binari sono pubblicati come build "self-contained, single-file" per `win-x64` e sono posizionati in `artifacts/publish` dallo script di pubblicazione.
 
 ---
 
-## 🛠 Tecnologie utilizzate
-- **.NET 10.0**
-- **C# 11**
-- **Worker Service / Windows Service**
-- **API Win32 per gestione Print Spooler**
-- **WMI (opzionale)**
+## Installazione (utente finale)
+
+Opzioni disponibili (esegui come amministratore):
+
+1) Usare il tool `gestionesacm.exe` (consigliato)
+- Estrai la release in una cartella.
+- Apri PowerShell o cmd come amministratore e avvia `gestionesacm.exe` per il menu interattivo che trova automaticamente `ServizioAntiCopieMultiple.exe` nella stessa cartella.
+
+2) Usare direttamente `sc.exe`
+- `sc create ServizioAntiCopieMultiple binPath= "C:\path\to\ServizioAntiCopieMultiple.exe" start= auto DisplayName= "Servizio Anti Copie Multiple"`
+- `sc start ServizioAntiCopieMultiple`
+
+Note:
+- La creazione della sorgente del registro eventi (`EventLog` source) richiede privilegi amministrativi. Se si usa `gestionesacm.exe`, il tool tenterà di creare la sorgente durante l'installazione.
 
 ---
 
-# 👨‍💻 Sezione Sviluppatore
+## Per gli sviluppatori
 
-Questa sezione è pensata per chi vuole compilare, modificare o estendere il progetto.
+Script e CI:
+- `publish.ps1` pubblica entrambi i progetti in `artifacts/publish` come `win-x64` self-contained single-file.
+- Il workflow GitHub Actions `.github/workflows/publish.yml` esegue build/publish e allega gli artifact a una release quando tagghi `v*`.
 
-### 1️⃣ Requisiti
-- Visual Studio 2026 con carico di lavoro **Sviluppo applicazioni desktop .NET**
-- .NET 10.0 SDK installato
-- Permessi amministrativi per eseguire test su servizi Windows
-
-### 2️⃣ Struttura del progetto
-```
-/ServizioAntiCopieMultiple
-│
-├── Program.cs
-├── PrintMonitorWorker.cs
-├── appsettings.json
-├── LICENSE
-└── README.md
-```
-
-### 3️⃣ Configurazione del progetto
-Il file `appsettings.json` permette di configurare:
-
-```json
-{
-  "PrintMonitorSettings": {
-    "IntervalSeconds": 5,
-    "Printers": ["StampanteUfficio1", "StampanteUfficio2"],
-    "NotifyUser": true,
-    "LogLevel": "Information"
-  }
-}
-```
-
-- `IntervalSeconds`: intervallo di controllo della coda di stampa  
-- `Printers`: stampanti da monitorare  
-- `NotifyUser`: true per abilitare popup/notifiche  
-- `LogLevel`: livello di log (Information, Warning, Error)
-
-### 4️⃣ Compilazione
-1. Apri il progetto in Visual Studio 2026.
-2. Seleziona **Build → Build Solution**.
-3. In alternativa, puoi usare **Build → Publish → Folder** per ottenere l’eseguibile.
-
-### 5️⃣ Personalizzazione
-- Modifica `PrintMonitorWorker.cs` per aggiungere regole o comportamenti personalizzati.
-- Il codice è rilasciato con **CC BY-NC-SA 4.0**:
-  - Obbligo di attribuzione  
-  - Non commerciale  
-  - Le versioni modificate devono mantenere la stessa licenza
+Compilare localmente:
+- `dotnet build ServizioAntiCopieMultiple.sln -c Release`
+- `pwsh publish.ps1` (richiede PowerShell)
 
 ---
 
-# 🖥 Sezione Utente
+## Uso di `gestionesacm`
 
-Questa sezione è pensata per chi vuole installare il servizio su Windows.  
-Puoi usare le **release già compilate** oppure compilare tu stesso.
-
-### 1️⃣ Installazione del servizio (da eseguibile)
-Apri un prompt dei comandi come amministratore ed esegui:
-
-```powershell
-sc create ServizioAntiCopieMultiple binPath= "C:\Percorso\alla\pubblicazione\ServizioAntiCopieMultiple.exe"
-```
-
-### 2️⃣ Avvio del servizio
-```powershell
-sc start ServizioAntiCopieMultiple
-```
-
-### 3️⃣ Stop del servizio
-```powershell
-sc stop ServizioAntiCopieMultiple
-```
-
-### 4️⃣ Rimozione del servizio
-```powershell
-sc delete ServizioAntiCopieMultiple
-```
-
-### 5️⃣ Uso tramite release GitHub
-- Scarica la release dalla sezione [Releases](https://github.com/tuoaccount/ServizioAntiCopieMultiple/releases)  
-- Estrai l’eseguibile in una cartella di tua scelta  
-- Segui i passaggi precedenti per creare il servizio Windows
+`gestionesacm.exe` è il tool console incluso nella release. Se si trova nella stessa cartella di `ServizioAntiCopieMultiple.exe` lo userà automaticamente. In alternativa, il tool chiederà il percorso dell'eseguibile del servizio.
 
 ---
 
-## 📄 Licenza
+## Note
 
-**Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)**  
-Copyright © **Nicola Cantalupo, 2024**
-
-- Modifiche permesse, ma devono mantenere la stessa licenza.  
-- Obbligo di attribuzione.  
-- Uso commerciale vietato.  
-- Testo completo: [https://creativecommons.org/licenses/by-nc-sa/4.0/](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+- Release ufficiali sono pensate per Windows x64. Il servizio usa API Windows-specifiche.
+- Testa l'installazione su una macchina Windows pulita prima di distribuire.
 
 ---
 
-## 🏗 Roadmap suggerita
-- Supporto multi-stampante in parallelo  
-- Notifiche avanzate (Toast Notification Windows 10/11)  
-- Configurazione remota tramite JSON centralizzato o database  
-- Dashboard web per monitorare i job in tempo reale  
+## Licenza
 
----
-
-## 👤 Autore
-**Nicola Cantalupo**  
-Progetto creato nel 2024
-
----
-
-## 🙏 Ringraziamenti
-Grazie a chi contribuisce al progetto o lo utilizza come base per soluzioni aziendali o educative.
+CC BY-NC-SA 4.0 — Nicola Cantalupo
 

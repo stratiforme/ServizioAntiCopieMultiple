@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.WindowsServices;
@@ -5,6 +6,8 @@ using Microsoft.Extensions.Logging.EventLog;
 using Serilog;
 using Serilog.Events;
 using ServizioAntiCopieMultiple;
+
+[assembly: SupportedOSPlatform("windows")]
 
 string logsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "logs");
 Directory.CreateDirectory(logsDir);
@@ -27,12 +30,19 @@ try
         .ConfigureLogging((context, logging) =>
         {
             logging.ClearProviders();
-            logging.AddEventLog(new EventLogSettings
+            try
             {
-                LogName = "Application",
-                SourceName = "ServizioAntiCopieMultiple"
-            });
-            logging.AddSerilog();
+                logging.AddEventLog(new EventLogSettings
+                {
+                    LogName = "Application",
+                    SourceName = "ServizioAntiCopieMultiple"
+                });
+            }
+            catch (Exception ex)
+            {
+                // If EventLog registration fails (lack of permissions), continue without it
+                Log.Warning(ex, "Impossibile registrare EventLog provider; continuerò senza EventLog logging.");
+            }
         })
         .ConfigureServices(services =>
         {

@@ -1,10 +1,73 @@
+using System.Runtime.Versioning;
 using System;
 using System.ServiceProcess;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Principal;
+using System.Threading;
+
+[assembly: SupportedOSPlatform("windows")]
 
 const string serviceName = "ServizioAntiCopieMultiple";
+
+bool IsAdministrator()
+{
+    try
+    {
+        using var id = WindowsIdentity.GetCurrent();
+        var principal = new WindowsPrincipal(id);
+        return principal.IsInRole(WindowsBuiltInRole.Administrator);
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+bool TryRestartAsAdmin()
+{
+    try
+    {
+        var exe = Environment.ProcessPath ?? System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+        if (string.IsNullOrEmpty(exe)) return false;
+        var args = string.Join(' ', Environment.GetCommandLineArgs().Skip(1).Select(a => a.Contains(' ') ? '"' + a + '"' : a));
+        var psi = new ProcessStartInfo(exe, args)
+        {
+            UseShellExecute = true,
+            Verb = "runas"
+        };
+        Process.Start(psi);
+        return true;
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+void EnsureElevated()
+{
+    if (!IsAdministrator())
+    {
+        Console.WriteLine("Questo tool richiede privilegi amministrativi per gestire il servizio.");
+        Console.Write("Tentare l'elevazione ad amministratore adesso? (S/n): ");
+        var ans = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(ans) || ans.Trim().Equals("s", StringComparison.OrdinalIgnoreCase))
+        {
+            if (TryRestartAsAdmin())
+            {
+                // Exit current process to allow elevated instance to run
+                Environment.Exit(0);
+            }
+            else
+            {
+                Console.WriteLine("Impossibile ottenere i privilegi elevati. Alcune operazioni potrebbero fallire.");
+                Thread.Sleep(1500);
+            }
+        }
+    }
+}
 
 void ShowMenu()
 {
@@ -40,21 +103,59 @@ void ShowMenu()
     Console.WriteLine("0) Esci");
 }
 
+string? FindServiceExe()
+{
+    // First, look in the same folder as the tool
+    string baseDir = AppContext.BaseDirectory;
+    string candidate = Path.Combine(baseDir, "ServizioAntiCopieMultiple.exe");
+    if (File.Exists(candidate)) return candidate;
+
+    // Also consider same folder with different casing
+    var exeInBase = Directory.EnumerateFiles(baseDir, "ServizioAntiCopieMultiple*.exe").FirstOrDefault();
+    if (exeInBase != null) return exeInBase;
+
+    // Check common publish/build locations relative to repo layout
+    var fallbacks = new[]
+    {
+        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Release", "net10.0", "publish", "ServizioAntiCopieMultiple.exe")),
+        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Release", "net10.0", "ServizioAntiCopieMultiple.exe")),
+        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Debug", "net10.0", "publish", "ServizioAntiCopieMultiple.exe")),
+        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Debug", "net10.0", "ServizioAntiCopieMultiple.exe")),
+        // Also check artifacts publish folder used by CI
+        Path.GetFullPath(Path.Combine(baseDir, "..", "artifacts", "publish", "ServizioAntiCopieMultiple.exe")),
+        Path.GetFullPath(Path.Combine(baseDir, "..", "..", "artifacts", "publish", "ServizioAntiCopieMultiple.exe"))
+    };
+
+    foreach (var f in fallbacks)
+    {
+        if (File.Exists(f)) return f;
+    }
+
+    return null;
+}
+
 bool TryInstallService(out string message)
 {
+    if (!IsAdministrator())
+    {
+        message = "Operazione richiede privilegi amministrativi. Riavvia il tool come amministratore.";
+        return false;
+    }
+
     try
     {
-        string exePath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "ServizioAntiCopieMultiple", "bin", "Release", "net10.0", "publish", "ServizioAntiCopieMultiple.exe"));
-        // if the publish folder does not exist, fallback to build output
-        if (!File.Exists(exePath))
+        string? exePath = FindServiceExe();
+        if (string.IsNullOrEmpty(exePath))
         {
-            exePath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "ServizioAntiCopieMultiple", "bin", "Release", "net10.0", "ServizioAntiCopieMultiple.exe"));
-        }
-
-        if (!File.Exists(exePath))
-        {
-            message = $"Eseguibile non trovato: {exePath} - compila e pubblica prima di installare.";
-            return false;
+            Console.WriteLine("Eseguibile del servizio non trovato automaticamente.");
+            Console.Write("Inserisci il percorso completo dell'eseguibile del servizio (o premi invio per annullare): ");
+            var input = Console.ReadLine();
+            if (string.IsNullOrWhiteSpace(input) || !File.Exists(input))
+            {
+                message = "Eseguibile non specificato o non trovato.";
+                return false;
+            }
+            exePath = input.Trim('"');
         }
 
         // sc create requires cmd invocation
@@ -68,7 +169,26 @@ bool TryInstallService(out string message)
         string output = p!.StandardOutput.ReadToEnd();
         p.WaitForExit();
         message = output;
-        return p.ExitCode == 0 || output.Contains("CreateService SUCCESS");
+
+        bool created = p.ExitCode == 0 || output.Contains("CreateService SUCCESS");
+        if (created)
+        {
+            // Try to create EventLog source so the service can write to Application log
+            try
+            {
+                if (!EventLog.SourceExists(serviceName))
+                {
+                    EventLog.CreateEventSource(new EventSourceCreationData(serviceName, "Application"));
+                    message += "\nEventLog source created.";
+                }
+            }
+            catch (Exception ex)
+            {
+                message += "\nWarning: impossibile creare la sorgente EventLog: " + ex.Message;
+            }
+        }
+
+        return created;
     }
     catch (Exception ex)
     {
@@ -79,6 +199,12 @@ bool TryInstallService(out string message)
 
 bool TryUninstallService(out string message)
 {
+    if (!IsAdministrator())
+    {
+        message = "Operazione richiede privilegi amministrativi. Riavvia il tool come amministratore.";
+        return false;
+    }
+
     try
     {
         var psi = new ProcessStartInfo("sc.exe", $"delete {serviceName}")
@@ -91,7 +217,26 @@ bool TryUninstallService(out string message)
         string output = p!.StandardOutput.ReadToEnd();
         p.WaitForExit();
         message = output;
-        return p.ExitCode == 0 || output.Contains("DeleteService SUCCESS");
+
+        bool deleted = p.ExitCode == 0 || output.Contains("DeleteService SUCCESS");
+        if (deleted)
+        {
+            // Try to remove EventLog source
+            try
+            {
+                if (EventLog.SourceExists(serviceName))
+                {
+                    EventLog.DeleteEventSource(serviceName);
+                    message += "\nEventLog source removed.";
+                }
+            }
+            catch (Exception ex)
+            {
+                message += "\nWarning: impossibile rimuovere la sorgente EventLog: " + ex.Message;
+            }
+        }
+
+        return deleted;
     }
     catch (Exception ex)
     {
@@ -102,6 +247,12 @@ bool TryUninstallService(out string message)
 
 bool TryStartService(out string message)
 {
+    if (!IsAdministrator())
+    {
+        message = "Operazione richiede privilegi amministrativi. Riavvia il tool come amministratore.";
+        return false;
+    }
+
     try
     {
         using var sc = new ServiceController(serviceName);
@@ -124,6 +275,12 @@ bool TryStartService(out string message)
 
 bool TryStopService(out string message)
 {
+    if (!IsAdministrator())
+    {
+        message = "Operazione richiede privilegi amministrativi. Riavvia il tool come amministratore.";
+        return false;
+    }
+
     try
     {
         using var sc = new ServiceController(serviceName);
@@ -143,6 +300,9 @@ bool TryStopService(out string message)
         return false;
     }
 }
+
+// Ensure elevated privileges at startup when possible
+EnsureElevated();
 
 while (true)
 {
