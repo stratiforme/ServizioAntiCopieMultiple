@@ -11,25 +11,63 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.x'
+          dotnet-version: '10.0.x'
+
       - name: Restore
-        run: dotnet restore
+        run: dotnet restore ServizioAntiCopieMultiple.sln
+
       - name: Build
-        run: dotnet build --configuration Release
-      - name: Publish service and tool
-        run: pwsh publish.ps1
+        run: dotnet build ServizioAntiCopieMultiple.sln -c Release --no-restore
+
+      - name: Publish ServizioAntiCopieMultiple
+        run: |
+          dotnet publish ServizioAntiCopieMultiple/ServizioAntiCopieMultiple.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o artifacts/publish
+
+      - name: Publish GestioneSACM
+        run: |
+          dotnet publish GestioneSACM/GestioneSACM.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o artifacts/publish
+
+      - name: List published files
+        run: dir artifacts\publish || echo "No published files"
+
+      - name: Create zip of published artifacts
+        run: |
+          if (-Not (Test-Path artifacts)) { New-Item -ItemType Directory -Path artifacts | Out-Null }
+          if (-Not (Test-Path artifacts\publish)) { Write-Error 'Publish folder not found'; exit 1 }
+          $zipName = "release-${{ github.ref_name }}.zip"
+          # Create zip in artifacts (parent) to avoid including the zip file in itself
+          $zipPath = Join-Path "artifacts" $zipName
+          Push-Location artifacts\publish
+          Compress-Archive -Path * -DestinationPath "..\$zipName" -Force
+          Pop-Location
+
+      - name: Generate SHA256 checksum
+        run: |
+          $zipName = "release-${{ github.ref_name }}.zip"
+          $zipPath = Join-Path "artifacts" $zipName
+          if (-Not (Test-Path $zipPath)) { Write-Error 'Zip file not found'; exit 1 }
+          $hash = Get-FileHash -Algorithm SHA256 $zipPath
+          $outFile = "$zipPath.sha256"
+          ($hash.Hash + '  ' + (Split-Path $zipPath -Leaf)) | Out-File -FilePath $outFile -Encoding ASCII
+
       - name: Upload published artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-publish
           path: artifacts/publish
+
       - name: Create Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/publish/*
+          # include the zip and the published files
+          files: |
+            artifacts/release-${{ github.ref_name }}.zip
+            artifacts/release-${{ github.ref_name }}.zip.sha256
+            artifacts/publish/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
