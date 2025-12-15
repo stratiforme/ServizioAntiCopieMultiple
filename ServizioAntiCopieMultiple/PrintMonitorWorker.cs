@@ -35,10 +35,11 @@ namespace ServizioAntiCopieMultiple
                 // FileSystemWatcher to detect user OK responses (external UI/tool can drop files named <jobId>.ok)
                 _responseWatcher = new FileSystemWatcher(_responsesDir, "*.ok")
                 {
-                    EnableRaisingEvents = true,
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.CreationTime
                 };
                 _responseWatcher.Created += OnResponseFileCreated;
+                // Enable raising events after handlers attached to avoid race condition
+                _responseWatcher.EnableRaisingEvents = true;
 
                 // WMI event watcher for new print jobs
                 string query = "SELECT * FROM __InstanceCreationEvent WITHIN 2 WHERE TargetInstance ISA 'Win32_PrintJob'";
@@ -76,12 +77,34 @@ namespace ServizioAntiCopieMultiple
                 string jobId = Path.GetFileNameWithoutExtension(e.Name)!;
                 _logger.LogInformation("UserClickedOk: received OK response for job {JobId} (file: {FileName})", jobId, e.FullPath);
 
-                // Mark observed so other logic can react if needed
-                _observedJobs[jobId] = true;
+                // Mark observed so other logic can react if needed (only add once)
+                _observedJobs.TryAdd(jobId, true);
+
+                // Attempt to remove the response file to avoid accumulation. Non-critical.
+                TryDeleteFileWithRetries(e.FullPath);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error handling response file {FileName}", e.FullPath);
+            }
+        }
+
+        private static void TryDeleteFileWithRetries(string path, int retries = 3)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            for (int i = 0; i < retries; i++)
+            {
+                try
+                {
+                    if (File.Exists(path))
+                        File.Delete(path);
+                    return;
+                }
+                catch
+                {
+                    // Wait briefly before retrying
+                    Thread.Sleep(100);
+                }
             }
         }
 
@@ -98,35 +121,9 @@ namespace ServizioAntiCopieMultiple
                 string document = target["Document"]?.ToString() ?? string.Empty;
                 string owner = target["Owner"]?.ToString() ?? string.Empty;
 
-                // Parse job id with minimal allocations (avoid Split which allocates an array)
-                string jobId;
-                if (!string.IsNullOrEmpty(name))
-                {
-                    int comma = name.LastIndexOf(',');
-                    if (comma >= 0 && comma + 1 < name.Length)
-                        jobId = name.Substring(comma + 1).Trim();
-                    else
-                        jobId = name;
-                }
-                else
-                {
-                    jobId = Guid.NewGuid().ToString();
-                }
-
-                // Extract copies with a single property access where possible
-                int copies = 1;
-                try
-                {
-                    var copiesObj = target["Copies"] ?? target["TotalPages"];
-                    if (copiesObj != null)
-                    {
-                        if (copiesObj is int ci)
-                            copies = ci;
-                        else if (int.TryParse(copiesObj.ToString(), out var parsed))
-                            copies = parsed;
-                    }
-                }
-                catch { }
+                // Use shared parser helpers
+                string jobId = PrintJobParser.ParseJobId(name);
+                int copies = PrintJobParser.GetCopiesFromManagementObject(target);
 
                 if (copies > 1)
                 {
@@ -146,7 +143,9 @@ namespace ServizioAntiCopieMultiple
                     if (File.Exists(responseFile))
                     {
                         _logger.LogInformation("UserClickedOk: OK response already present for job {JobId}; allowing job to proceed.", jobId);
-                        _observedJobs[jobId] = true;
+                        _observedJobs.TryAdd(jobId, true);
+                        // remove the file to keep things clean
+                        TryDeleteFileWithRetries(responseFile);
                         return;
                     }
 
