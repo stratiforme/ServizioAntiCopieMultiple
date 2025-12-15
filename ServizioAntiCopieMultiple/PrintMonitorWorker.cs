@@ -95,29 +95,36 @@ namespace ServizioAntiCopieMultiple
 
                 // Extract useful properties
                 string? name = target["Name"]?.ToString(); // often "PrinterName, JobId"
-                string? document = target["Document"]?.ToString();
-                string? owner = target["Owner"]?.ToString();
+                string document = target["Document"]?.ToString() ?? string.Empty;
+                string owner = target["Owner"]?.ToString() ?? string.Empty;
 
-                // Attempt to parse job id from Name (after comma)
-                string jobId = name ?? Guid.NewGuid().ToString();
-                try
+                // Parse job id with minimal allocations (avoid Split which allocates an array)
+                string jobId;
+                if (!string.IsNullOrEmpty(name))
                 {
-                    if (name != null && name.Contains(","))
-                    {
-                        var parts = name.Split(',');
-                        jobId = parts[^1].Trim();
-                    }
+                    int comma = name.LastIndexOf(',');
+                    if (comma >= 0 && comma + 1 < name.Length)
+                        jobId = name.Substring(comma + 1).Trim();
+                    else
+                        jobId = name;
                 }
-                catch { }
+                else
+                {
+                    jobId = Guid.NewGuid().ToString();
+                }
 
+                // Extract copies with a single property access where possible
                 int copies = 1;
                 try
                 {
-                    // Many drivers expose a Copies property; fall back to TotalPages
-                    if (target["Copies"] != null)
-                        copies = Convert.ToInt32(target["Copies"]);
-                    else if (target["TotalPages"] != null)
-                        copies = Convert.ToInt32(target["TotalPages"]);
+                    var copiesObj = target["Copies"] ?? target["TotalPages"];
+                    if (copiesObj != null)
+                    {
+                        if (copiesObj is int ci)
+                            copies = ci;
+                        else if (int.TryParse(copiesObj.ToString(), out var parsed))
+                            copies = parsed;
+                    }
                 }
                 catch { }
 
@@ -125,8 +132,14 @@ namespace ServizioAntiCopieMultiple
                 {
                     _logger.LogInformation("DetectedMultiCopyPrintJob: JobId={JobId}, Document={Document}, Owner={Owner}, Copies={Copies}", jobId, document, owner, copies);
 
-                    // Log that we would notify the user (external UI can pick this up)
                     _logger.LogInformation("NotificationSent: Notification sent to user for job {JobId}", jobId);
+
+                    // Prefer in-memory observed set first to avoid a File I/O hit
+                    if (_observedJobs.ContainsKey(jobId))
+                    {
+                        _logger.LogInformation("UserClickedOk: OK response already observed for job {JobId}; allowing job to proceed.", jobId);
+                        return;
+                    }
 
                     // If an OK response file exists immediately, respect it and do not cancel
                     string responseFile = Path.Combine(_responsesDir, jobId + ".ok");
@@ -137,29 +150,38 @@ namespace ServizioAntiCopieMultiple
                         return;
                     }
 
-                    // Attempt to cancel the job
+                    // Attempt to cancel the job — do not block the WMI event thread, run in background
                     try
                     {
-                        // The TargetInstance path can be used to delete the job
                         string path = target["__PATH"]?.ToString() ?? string.Empty;
                         if (!string.IsNullOrEmpty(path))
                         {
-                            using var job = new ManagementObject(path);
-                            job.Delete();
-                            _logger.LogInformation("JobCancelled: Successfully cancelled print job {JobId}", jobId);
+                            Task.Run(() =>
+                            {
+                                try
+                                {
+                                    using var job = new ManagementObject(path);
+                                    job.Delete();
+                                    _logger.LogInformation("JobCancelled: Successfully cancelled print job {JobId}", jobId);
+                                }
+                                catch (ManagementException mex)
+                                {
+                                    _logger.LogError(mex, "JobCancelled: ManagementException while cancelling job {JobId}", jobId);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogError(ex, "JobCancelled: Unexpected error while cancelling job {JobId}", jobId);
+                                }
+                            });
                         }
                         else
                         {
                             _logger.LogWarning("JobCancelled: Could not determine WMI path for job {JobId}; cancellation not attempted.", jobId);
                         }
                     }
-                    catch (ManagementException mex)
-                    {
-                        _logger.LogError(mex, "JobCancelled: ManagementException while cancelling job {JobId}", jobId);
-                    }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "JobCancelled: Unexpected error while cancelling job {JobId}", jobId);
+                        _logger.LogError(ex, "JobCancelled: Unexpected error while scheduling cancellation for job {JobId}", jobId);
                     }
                 }
             }
