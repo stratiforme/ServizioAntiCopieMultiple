@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using BenchmarkDotNet.Attributes;
 using ServizioAntiCopieMultiple;
 using Microsoft.VSDiagnostics;
+using System.Runtime.Versioning;
 
 namespace ServizioAntiCopieMultiple.Benchmarks
 {
@@ -26,10 +27,13 @@ namespace ServizioAntiCopieMultiple.Benchmarks
         }
 
         [Benchmark]
+        [SupportedOSPlatform("windows")]
         public string ParseJobId() => PrintJobParser.ParseJobId(nameWithJobId);
         [Benchmark]
+        [SupportedOSPlatform("windows")]
         public int GetCopies_FromCopies() => PrintJobParser.GetCopiesFromDictionary(propsWithCopies);
         [Benchmark]
+        [SupportedOSPlatform("windows")]
         public int GetCopies_FromTotalPages() => PrintJobParser.GetCopiesFromDictionary(propsWithTotalPages);
     }
 }
