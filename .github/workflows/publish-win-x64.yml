@@ -19,30 +19,59 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Restore
+      - name: Restore ServizioAntiCopieMultiple
         run: dotnet restore ServizioAntiCopieMultiple/ServizioAntiCopieMultiple.csproj
 
-      - name: Build
+      - name: Build ServizioAntiCopieMultiple
         run: dotnet build ServizioAntiCopieMultiple/ServizioAntiCopieMultiple.csproj -c Release --no-restore
 
-      - name: Publish (self-contained single file win-x64)
+      - name: Publish ServizioAntiCopieMultiple (self-contained single file win-x64)
         run: |
-          dotnet publish ServizioAntiCopieMultiple/ServizioAntiCopieMultiple.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=true /p:PublishReadyToRun=true /p:IncludeNativeLibrariesForSelfExtract=true -o ${{ github.workspace }}/publish/win-x64
+          dotnet publish ServizioAntiCopieMultiple/ServizioAntiCopieMultiple.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=false /p:PublishReadyToRun=true /p:IncludeNativeLibrariesForSelfExtract=true -o ${{ github.workspace }}/publish/servizio-win-x64
 
-      - name: Upload artifact
+      - name: Upload Servizio artifact
         uses: actions/upload-artifact@v4
         with:
           name: ServizioAntiCopieMultiple-win-x64
-          path: publish/win-x64/
+          path: publish/servizio-win-x64/
 
-      - name: (Optional) Create ZIP
+      - name: (Optional) Create Servizio ZIP
         if: always()
         run: |
-          powershell -NoLogo -NoProfile -Command "Compress-Archive -Path '${{ github.workspace }}\publish\win-x64\*' -DestinationPath '${{ github.workspace }}\publish\ServizioAntiCopieMultiple-win-x64.zip' -Force"
+          powershell -NoLogo -NoProfile -Command "Compress-Archive -Path '${{ github.workspace }}\publish\servizio-win-x64\*' -DestinationPath '${{ github.workspace }}\publish\ServizioAntiCopieMultiple-win-x64.zip' -Force"
 
-      - name: Upload ZIP artifact
+      - name: Upload Servizio ZIP artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ServizioAntiCopieMultiple-win-x64-zip
           path: publish/ServizioAntiCopieMultiple-win-x64.zip
+
+      # --- GestioneSACM project publish steps ---
+      - name: Restore GestioneSACM
+        run: dotnet restore GestioneSACM/GestioneSACM.csproj
+
+      - name: Build GestioneSACM
+        run: dotnet build GestioneSACM/GestioneSACM.csproj -c Release --no-restore
+
+      - name: Publish GestioneSACM (self-contained single file win-x64)
+        run: |
+          dotnet publish GestioneSACM/GestioneSACM.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=false /p:PublishReadyToRun=true /p:IncludeNativeLibrariesForSelfExtract=true -o ${{ github.workspace }}/publish/gestionesacm-win-x64
+
+      - name: Upload GestioneSACM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GestioneSACM-win-x64
+          path: publish/gestionesacm-win-x64/
+
+      - name: (Optional) Create GestioneSACM ZIP
+        if: always()
+        run: |
+          powershell -NoLogo -NoProfile -Command "Compress-Archive -Path '${{ github.workspace }}\publish\gestionesacm-win-x64\*' -DestinationPath '${{ github.workspace }}\publish\GestioneSACM-win-x64.zip' -Force"
+
+      - name: Upload GestioneSACM ZIP artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GestioneSACM-win-x64-zip
+          path: publish/GestioneSACM-win-x64.zip
