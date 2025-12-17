@@ -11,6 +11,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\ServizioAntiCopieMultiple\ServizioAntiCopieMultiple.csproj" />
+    <!-- Link the parser source file from the service project so benchmarks can compile without referencing the executable project -->
+    <Compile Include="..\ServizioAntiCopieMultiple\PrintJobParser.cs">
+      <Link>PrintJobParser.cs</Link>
+    </Compile>
   </ItemGroup>
+
 </Project>
