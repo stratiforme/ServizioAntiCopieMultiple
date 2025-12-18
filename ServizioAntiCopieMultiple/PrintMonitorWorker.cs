@@ -184,15 +184,17 @@ namespace ServizioAntiCopieMultiple
                     Timeout = ManagementOptions.InfiniteTimeout
                 };
 
-                var scope = new ManagementScope("\\.\\root\\cimv2", connOptions);
+                string query = "SELECT * FROM __InstanceCreationEvent WITHIN 2 WHERE TargetInstance ISA 'Win32_PrintJob'";
+                var wql = new WqlEventQuery(query);
 
+                // Try creating and connecting a scoped watcher inside a guarded block.
                 try
                 {
+                    // Use verbatim literal for clarity
+                    var scope = new ManagementScope(@"\\.\root\cimv2", connOptions);
+
                     scope.Connect();
                     _logger.LogInformation("WMI scope connected to {Namespace}", scope.Path?.Path);
-
-                    string query = "SELECT * FROM __InstanceCreationEvent WITHIN 2 WHERE TargetInstance ISA 'Win32_PrintJob'";
-                    var wql = new WqlEventQuery(query);
 
                     // Create watcher bound to the connected scope
                     _printJobWatcher = new ManagementEventWatcher(scope, wql);
@@ -223,14 +225,13 @@ namespace ServizioAntiCopieMultiple
                         }
                     }
                 }
-                catch (Exception wmiEx)
+                catch (Exception scopedEx)
                 {
-                    _logger.LogError(wmiEx, "Unable to connect to WMI scope root\\cimv2. Print job monitoring may not function.");
-                    // Try a best-effort fallback: attempt an unscoped watcher
+                    // Construction of ManagementScope or Connect() failed -> try unscoped fallback.
+                    _logger.LogWarning(scopedEx, "Failed creating/connecting WMI scope; attempting unscoped ManagementEventWatcher fallback");
+
                     try
                     {
-                        string query = "SELECT * FROM __InstanceCreationEvent WITHIN 2 WHERE TargetInstance ISA 'Win32_PrintJob'";
-                        var wql = new WqlEventQuery(query);
                         _printJobWatcher = new ManagementEventWatcher(wql);
                         _printJobWatcher.EventArrived += OnPrintJobArrived;
                         _printJobWatcher.Stopped += OnWatcherStopped;
