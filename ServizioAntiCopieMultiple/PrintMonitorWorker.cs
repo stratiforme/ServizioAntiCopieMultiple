@@ -23,6 +23,7 @@ namespace ServizioAntiCopieMultiple
         private readonly string _responsesDir;
         private readonly string _simulatorDir;
         private readonly PrintJobProcessor _processor = new();
+        private readonly PrintJobCanceller _canceller = new();
 
         public PrintMonitorWorker(ILogger<PrintMonitorWorker> logger)
         {
@@ -436,17 +437,19 @@ namespace ServizioAntiCopieMultiple
                     {
                         try
                         {
-                            using var job = new ManagementObject(path);
-                            job.Delete();
-                            _logger.LogInformation("JobCancelled: Successfully cancelled print job {JobId}", jobId);
-                        }
-                        catch (ManagementException mex)
-                        {
-                            _logger.LogError(mex, "JobCancelled: ManagementException while cancelling job {JobId}. Path={Path}", jobId, path);
+                            var cancelled = await _canceller.CancelAsync(path, info.Name, _logger).ConfigureAwait(false);
+                            if (cancelled)
+                            {
+                                _logger.LogInformation("JobCancelled: Successfully cancelled print job {JobId}", jobId);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("JobCancelled: Cancellation attempt failed for job {JobId}. Will not retry automatically.", jobId);
+                            }
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "JobCancelled: Unexpected error while cancelling job {JobId}. Path={Path}", jobId, path);
+                            _logger.LogError(ex, "JobCancelled: Unexpected error while cancelling job {JobId}", jobId);
                         }
                     });
 

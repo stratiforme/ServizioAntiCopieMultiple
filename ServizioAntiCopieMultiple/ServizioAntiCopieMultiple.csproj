@@ -5,6 +5,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>dotnet-ServizioAntiCopieMultiple-6e167280-1aed-43fd-949d-802ce9d7f5e7</UserSecretsId>
+
+    <!-- Abilita WPF per poter usare System.Printing (ReachFramework / WindowsBase) -->
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <!-- Publish defaults for CI / release: single-file self-contained build for Windows x64 -->
@@ -26,5 +29,8 @@
     <PackageReference Include="System.Management" Version="8.0.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageReference Include="Microsoft.Windows.Compatibility" Version="8.0.0" />
+    <!-- Override per mitigazione vulnerabilità -->
+    <PackageReference Include="System.IO.Packaging" Version="8.0.1" />
   </ItemGroup>
 </Project>
