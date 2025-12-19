@@ -53,7 +53,7 @@ namespace ServizioAntiCopieMultiple
             return 1;
         }
 
-        // New helper to extract copies from a WMI ManagementBaseObject without allocations
+        // New helper to extract copies from a WMI ManagementBaseObject with improved heuristics
         public static int GetCopiesFromManagementObject(ManagementBaseObject? target)
         {
             if (target == null)
@@ -61,19 +61,52 @@ namespace ServizioAntiCopieMultiple
 
             try
             {
-                var copiesObj = target["Copies"] ?? target["TotalPages"];
+                // 1) Prefer explicit Copies property
+                var copiesObj = target["Copies"];
                 if (copiesObj != null)
                 {
                     if (copiesObj is int ci)
                         return ci;
-
                     if (int.TryParse(copiesObj.ToString(), out var parsed))
                         return parsed;
+                }
+
+                // 2) Try to infer copies from TotalPages and a per-document page count if available
+                int totalPages = 0;
+                var totalObj = target["TotalPages"];
+                if (totalObj != null && int.TryParse(totalObj.ToString(), out var tp))
+                    totalPages = tp;
+
+                int pagesPerDoc = 0;
+                string[] pagePropCandidates = { "Pages", "NumberOfPages", "PageCount" };
+                foreach (var prop in pagePropCandidates)
+                {
+                    var pObj = target[prop];
+                    if (pObj != null && int.TryParse(pObj.ToString(), out var pVal) && pVal > 0)
+                    {
+                        pagesPerDoc = pVal;
+                        break;
+                    }
+                }
+
+                if (pagesPerDoc > 0 && totalPages > 0)
+                {
+                    // estimate copies as totalPages / pagesPerDoc (round up)
+                    int inferred = Math.Max(1, (totalPages + pagesPerDoc - 1) / pagesPerDoc);
+                    return inferred;
+                }
+
+                // 3) Fallback: some drivers report TotalPages already multiplied by copies (no per-doc pages property)
+                if (totalPages > 1)
+                {
+                    // Treat TotalPages as likely indicator of multiple copies when no other info available
+                    // Cap to a reasonable max to avoid absurd values from misreported properties
+                    return Math.Min(totalPages, 1000);
                 }
             }
             catch
             {
-                // ignore and return default
+                // ignore and fallthrough
             }
 
             return 1;
