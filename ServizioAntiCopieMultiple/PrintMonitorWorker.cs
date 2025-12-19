@@ -23,6 +23,7 @@ namespace ServizioAntiCopieMultiple
         private readonly ConcurrentDictionary<string, bool> _observedJobs = new();
         private readonly string _responsesDir;
         private readonly string _simulatorDir;
+        private readonly string _diagnosticsDir;
         private readonly PrintJobProcessor _processor = new();
         private readonly PrintJobCanceller _canceller = new();
 
@@ -31,6 +32,7 @@ namespace ServizioAntiCopieMultiple
             _logger = logger;
             _responsesDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "responses");
             _simulatorDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "simulator");
+            _diagnosticsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "diagnostics");
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -46,6 +48,10 @@ namespace ServizioAntiCopieMultiple
                 // Ensure simulator directory exists for local testing (drop JSON files to simulate print jobs)
                 Directory.CreateDirectory(_simulatorDir);
                 _logger.LogInformation("Simulator directory ensured at {dir}", _simulatorDir);
+
+                // Ensure diagnostics directory exists for property dumps
+                Directory.CreateDirectory(_diagnosticsDir);
+                _logger.LogInformation("Diagnostics directory ensured at {dir}", _diagnosticsDir);
 
                 // FileSystemWatcher to detect simulator JSON files
                 _simulatorWatcher = new FileSystemWatcher(_simulatorDir, "*.json")
@@ -404,6 +410,16 @@ namespace ServizioAntiCopieMultiple
                     _logger.LogDebug(ex, "Failed to log WMIPrintEvent basic info");
                 }
 
+                // Save full TargetInstance dump to diagnostics for offline analysis
+                try
+                {
+                    SaveTargetDumpToFile(target, jobId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to save TargetInstance dump to diagnostics");
+                }
+
                 // Build PrintJobInfo and hand off to common processor
                 var info = new PrintJobInfo
                 {
@@ -562,6 +578,16 @@ namespace ServizioAntiCopieMultiple
                     // Log operation-level event
                     _logger.LogInformation("WMIPrintOpEventDetailed: Event={Event}, JobId={JobId}, Name={Name}, Copies={Copies}, Path={Path}", eventClass, PrintJobParser.ParseJobId(name), name ?? "<null>", copies, info.Path ?? "<empty>");
 
+                    // Save full TargetInstance dump for operation events as well
+                    try
+                    {
+                        SaveTargetDumpToFile(target, PrintJobParser.ParseJobId(name));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Failed to save TargetInstance dump (operation)");
+                    }
+
                     if (info.Copies > 1)
                     {
                         ProcessPrintJobInfo(info);
@@ -642,6 +668,35 @@ namespace ServizioAntiCopieMultiple
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error disposing watchers");
+            }
+        }
+
+        private void SaveTargetDumpToFile(ManagementBaseObject target, string jobId)
+        {
+            try
+            {
+                var props = new Dictionary<string, object?>();
+                foreach (PropertyData p in target.Properties)
+                {
+                    try
+                    {
+                        props[p.Name] = p.Value;
+                    }
+                    catch (Exception ex)
+                    {
+                        props[p.Name] = $"<error: {ex.Message}>";
+                    }
+                }
+
+                string fileName = $"wmi_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId ?? "unknown"}.json";
+                string path = Path.Combine(_diagnosticsDir, fileName);
+                var opts = new JsonSerializerOptions { WriteIndented = true };
+                File.WriteAllText(path, JsonSerializer.Serialize(props, opts));
+                _logger.LogInformation("DiagnosticsDumpSaved: WMI TargetInstance properties saved to {Path}", path);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "SaveTargetDumpToFile: failed");
             }
         }
     }
