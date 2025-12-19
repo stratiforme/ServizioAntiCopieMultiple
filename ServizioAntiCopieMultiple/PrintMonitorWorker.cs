@@ -342,6 +342,17 @@ namespace ServizioAntiCopieMultiple
                 string jobId = PrintJobParser.ParseJobId(name);
                 int copies = PrintJobParser.GetCopiesFromManagementObject(target);
 
+                // Log received event at Information level so events are visible in logs even when Copies == 1
+                try
+                {
+                    string wmiPath = target["__PATH"]?.ToString() ?? string.Empty;
+                    _logger.LogInformation("WMIPrintEvent: JobId={JobId}, Name={Name}, Document={Document}, Owner={Owner}, Copies={Copies}, Path={Path}", jobId, name ?? "<null>", document, owner, copies, string.IsNullOrEmpty(wmiPath) ? "<empty>" : wmiPath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to log WMIPrintEvent basic info");
+                }
+
                 // Build PrintJobInfo and hand off to common processor
                 var info = new PrintJobInfo
                 {
