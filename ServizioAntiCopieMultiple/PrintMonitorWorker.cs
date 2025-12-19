@@ -17,6 +17,7 @@ namespace ServizioAntiCopieMultiple
     {
         private readonly ILogger<PrintMonitorWorker> _logger;
         private ManagementEventWatcher? _printJobWatcher;
+        private ManagementEventWatcher? _printJobOpWatcher;
         private FileSystemWatcher? _responseWatcher;
         private FileSystemWatcher? _simulatorWatcher;
         private readonly ConcurrentDictionary<string, bool> _observedJobs = new();
@@ -202,10 +203,26 @@ namespace ServizioAntiCopieMultiple
                     _printJobWatcher.EventArrived += OnPrintJobArrived;
                     _printJobWatcher.Stopped += OnWatcherStopped;
 
+                    // Also create a broader operation watcher to catch modifications/deletions which some drivers use
+                    try
+                    {
+                        var opQuery = new WqlEventQuery("SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
+                        _printJobOpWatcher = new ManagementEventWatcher(scope, opQuery);
+                        _printJobOpWatcher.EventArrived += OnPrintJobOperationArrived;
+                        _printJobOpWatcher.Stopped += OnWatcherStopped;
+                    }
+                    catch (Exception opEx)
+                    {
+                        _logger.LogDebug(opEx, "Failed to create operation watcher (scoped)");
+                    }
+
                     try
                     {
                         _printJobWatcher.Start();
+                        _printJobOpWatcher?.Start();
                         _logger.LogInformation("ManagementEventWatcher started with query: {Query}", query);
+                        if (_printJobOpWatcher != null)
+                            _logger.LogInformation("ManagementEventWatcher (operation) started with query: SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
                     }
                     catch (Exception startEx)
                     {
@@ -217,8 +234,25 @@ namespace ServizioAntiCopieMultiple
                             _printJobWatcher = new ManagementEventWatcher(wql);
                             _printJobWatcher.EventArrived += OnPrintJobArrived;
                             _printJobWatcher.Stopped += OnWatcherStopped;
+
+                            // fallback op watcher (unscoped)
+                            try
+                            {
+                                var opQuery = new WqlEventQuery("SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
+                                _printJobOpWatcher = new ManagementEventWatcher(opQuery);
+                                _printJobOpWatcher.EventArrived += OnPrintJobOperationArrived;
+                                _printJobOpWatcher.Stopped += OnWatcherStopped;
+                            }
+                            catch (Exception opEx)
+                            {
+                                _logger.LogDebug(opEx, "Failed to create operation watcher (fallback)");
+                            }
+
                             _printJobWatcher.Start();
+                            _printJobOpWatcher?.Start();
                             _logger.LogInformation("ManagementEventWatcher started (fallback) with query: {Query}", query);
+                            if (_printJobOpWatcher != null)
+                                _logger.LogInformation("ManagementEventWatcher (operation fallback) started with query: SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
                         }
                         catch (Exception fbEx)
                         {
@@ -236,8 +270,25 @@ namespace ServizioAntiCopieMultiple
                         _printJobWatcher = new ManagementEventWatcher(wql);
                         _printJobWatcher.EventArrived += OnPrintJobArrived;
                         _printJobWatcher.Stopped += OnWatcherStopped;
+
+                        // unscoped op watcher
+                        try
+                        {
+                            var opQuery = new WqlEventQuery("SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
+                            _printJobOpWatcher = new ManagementEventWatcher(opQuery);
+                            _printJobOpWatcher.EventArrived += OnPrintJobOperationArrived;
+                            _printJobOpWatcher.Stopped += OnWatcherStopped;
+                        }
+                        catch (Exception opEx)
+                        {
+                            _logger.LogDebug(opEx, "Failed to create operation watcher (unscoped fallback)");
+                        }
+
                         _printJobWatcher.Start();
+                        _printJobOpWatcher?.Start();
                         _logger.LogInformation("ManagementEventWatcher started (unscoped fallback) with query: {Query}", query);
+                        if (_printJobOpWatcher != null)
+                            _logger.LogInformation("ManagementEventWatcher (operation unscoped fallback) started with query: SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
                     }
                     catch (Exception fbEx)
                     {
@@ -477,6 +528,57 @@ namespace ServizioAntiCopieMultiple
             }
         }
 
+        private void OnPrintJobOperationArrived(object? sender, EventArrivedEventArgs e)
+        {
+            try
+            {
+                var ev = e.NewEvent;
+                string? eventClass = ev?.ClassPath?.ClassName;
+                _logger.LogInformation("WMIPrintOpEvent: EventClass={EventClass}, TimeGenerated={Time}", eventClass, ev?["TIME_CREATED"]);
+
+                var target = (ManagementBaseObject?)e.NewEvent?["TargetInstance"];
+                if (target == null)
+                {
+                    _logger.LogWarning("Print job operation event arrived but TargetInstance was null");
+                    return;
+                }
+
+                // For creation and modification events, reuse existing handler logic
+                if (string.Equals(eventClass, "__InstanceCreationEvent", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(eventClass, "__InstanceModificationEvent", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Build minimal PrintJobInfo and process similarly to creation
+                    string? name = target["Name"]?.ToString();
+                    int copies = PrintJobParser.GetCopiesFromManagementObject(target);
+                    var info = new PrintJobInfo
+                    {
+                        Name = name,
+                        Document = target["Document"]?.ToString() ?? string.Empty,
+                        Owner = target["Owner"]?.ToString() ?? string.Empty,
+                        Copies = copies,
+                        Path = target["__PATH"]?.ToString() ?? string.Empty
+                    };
+
+                    // Log operation-level event
+                    _logger.LogInformation("WMIPrintOpEventDetailed: Event={Event}, JobId={JobId}, Name={Name}, Copies={Copies}, Path={Path}", eventClass, PrintJobParser.ParseJobId(name), name ?? "<null>", copies, info.Path ?? "<empty>");
+
+                    if (info.Copies > 1)
+                    {
+                        ProcessPrintJobInfo(info);
+                    }
+                }
+                else
+                {
+                    // Other operation events (e.g. deletion) are useful to log for diagnostics but not processed
+                    _logger.LogInformation("WMIPrintOpEventIgnored: Event={EventClass} for print job (no processing performed)", eventClass);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing print job operation event");
+            }
+        }
+
         private void OnWatcherStopped(object? sender, StoppedEventArgs e)
         {
             try
@@ -501,14 +603,6 @@ namespace ServizioAntiCopieMultiple
             }
         }
 
-        public override async Task StopAsync(CancellationToken cancellationToken)
-        {
-            await _processor.StopAsync().ConfigureAwait(false);
-            DisposeWatchers();
-            _logger.LogInformation("PrintMonitorWorker stopping");
-            await base.StopAsync(cancellationToken).ConfigureAwait(false);
-        }
-
         private void DisposeWatchers()
         {
             try
@@ -520,6 +614,15 @@ namespace ServizioAntiCopieMultiple
                     try { _printJobWatcher.Stop(); } catch { }
                     _printJobWatcher.Dispose();
                     _printJobWatcher = null;
+                }
+
+                if (_printJobOpWatcher != null)
+                {
+                    _printJobOpWatcher.EventArrived -= OnPrintJobOperationArrived;
+                    _printJobOpWatcher.Stopped -= OnWatcherStopped;
+                    try { _printJobOpWatcher.Stop(); } catch { }
+                    _printJobOpWatcher.Dispose();
+                    _printJobOpWatcher = null;
                 }
 
                 if (_responseWatcher != null)
