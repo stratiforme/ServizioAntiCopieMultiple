@@ -397,7 +397,6 @@ namespace ServizioAntiCopieMultiple
             _logger.LogInformation("DetectedMultiCopyPrintJob: JobId={JobId}, Document={Document}, Owner={Owner}, Copies={Copies}", jobId, info.Document, info.Owner, info.Copies);
             _logger.LogInformation("NotificationSent: Notification sent to user for job {JobId}", jobId);
 
-            // Log expected OK response filename and path so client/UI can match exactly
             try
             {
                 string expectedFileName = jobId + ".ok";
@@ -426,6 +425,10 @@ namespace ServizioAntiCopieMultiple
             try
             {
                 string path = info.Path ?? string.Empty;
+
+                // DIAGNOSTICA MIGLIORATA: loggare Name e Path a Info (non solo Debug)
+                _logger.LogInformation("AttemptingCancel: JobId={JobId}, Name={Name}, Path={Path}", jobId, info.Name ?? "<null>", string.IsNullOrEmpty(path) ? "<empty>" : path);
+
                 if (!string.IsNullOrEmpty(path))
                 {
                     // Schedule cancellation on processor to avoid spinning up many Task.Run
@@ -439,17 +442,19 @@ namespace ServizioAntiCopieMultiple
                         }
                         catch (ManagementException mex)
                         {
-                            _logger.LogError(mex, "JobCancelled: ManagementException while cancelling job {JobId}", jobId);
+                            _logger.LogError(mex, "JobCancelled: ManagementException while cancelling job {JobId}. Path={Path}", jobId, path);
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "JobCancelled: Unexpected error while cancelling job {JobId}", jobId);
+                            _logger.LogError(ex, "JobCancelled: Unexpected error while cancelling job {JobId}. Path={Path}", jobId, path);
                         }
                     });
+
+                    _logger.LogInformation("AttemptingCancelScheduled: cancellation scheduled for job {JobId}", jobId);
                 }
                 else
                 {
-                    _logger.LogWarning("JobCancelled: Could not determine WMI path for job {JobId}; cancellation not attempted.", jobId);
+                    _logger.LogWarning("JobCancelled: Could not determine WMI path for job {JobId}; cancellation not attempted. Name={Name}", jobId, info.Name);
                 }
             }
             catch (Exception ex)
