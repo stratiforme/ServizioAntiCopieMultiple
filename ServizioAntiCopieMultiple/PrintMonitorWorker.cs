@@ -9,6 +9,8 @@ using Microsoft.Extensions.Logging;
 using System.Runtime.Versioning;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Printing;
+using Microsoft.Extensions.Configuration;
 
 namespace ServizioAntiCopieMultiple
 {
@@ -26,13 +28,45 @@ namespace ServizioAntiCopieMultiple
         private readonly string _diagnosticsDir;
         private readonly PrintJobProcessor _processor = new();
         private readonly PrintJobCanceller _canceller = new();
+        private readonly ConcurrentDictionary<string, ConcurrentQueue<long>> _recentJobSignatures = new();
+        private static readonly TimeSpan SignatureWindow = TimeSpan.FromSeconds(5);
+        private readonly int _scanIntervalSeconds;
+        private readonly int _jobAgeThresholdSeconds; // ignore jobs older than this when scanning
 
-        public PrintMonitorWorker(ILogger<PrintMonitorWorker> logger)
+        public PrintMonitorWorker(ILogger<PrintMonitorWorker> logger, IConfiguration config)
         {
             _logger = logger;
             _responsesDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "responses");
             _simulatorDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "simulator");
             _diagnosticsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "diagnostics");
+
+            // Read configuration: prefer appsettings section PrintMonitor, then environment variables, then defaults
+            try
+            {
+                // appsetting keys: PrintMonitor:ScanIntervalSeconds, PrintMonitor:JobAgeThresholdSeconds
+                int defaultScan = 5;
+                int defaultAge = 30;
+
+                int scanVal = config.GetValue<int?>("PrintMonitor:ScanIntervalSeconds") ?? (int?)null ?? defaultScan;
+                int ageVal = config.GetValue<int?>("PrintMonitor:JobAgeThresholdSeconds") ?? (int?)null ?? defaultAge;
+
+                // environment variable overrides if present
+                var envScan = Environment.GetEnvironmentVariable("SACM_SCAN_INTERVAL_SECONDS");
+                var envAge = Environment.GetEnvironmentVariable("SACM_JOB_AGE_THRESHOLD_SECONDS");
+                if (int.TryParse(envScan, out var s)) scanVal = s;
+                if (int.TryParse(envAge, out var a)) ageVal = a;
+
+                _scanIntervalSeconds = Math.Max(1, scanVal);
+                _jobAgeThresholdSeconds = Math.Max(1, ageVal);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to read PrintMonitor configuration; using defaults");
+                _scanIntervalSeconds = 5;
+                _jobAgeThresholdSeconds = 30;
+            }
+
+            _logger.LogInformation("PrintMonitor configuration: ScanIntervalSeconds={ScanInterval}, JobAgeThresholdSeconds={JobAge}", _scanIntervalSeconds, _jobAgeThresholdSeconds);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -74,6 +108,9 @@ namespace ServizioAntiCopieMultiple
                 // Start WMI connect in background to avoid blocking
                 _ = Task.Run(async () => await EnsureWmiWatcherAsync(stoppingToken).ConfigureAwait(false));
 
+                // Start periodic queue scanner fallback
+                _ = Task.Run(async () => await QueueScannerLoop(stoppingToken).ConfigureAwait(false));
+
                 _logger.LogInformation("PrintMonitorWorker started and monitoring print jobs. Responses dir: {dir}", _responsesDir);
 
                 while (!stoppingToken.IsCancellationRequested)
@@ -95,6 +132,165 @@ namespace ServizioAntiCopieMultiple
                 await _processor.StopAsync().ConfigureAwait(false);
                 DisposeWatchers();
             }
+        }
+
+        private async Task QueueScannerLoop(CancellationToken ct)
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await ScanPrintQueuesAsync(ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) { break; }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Queue scanner encountered an error");
+                    }
+
+                    try { await Task.Delay(TimeSpan.FromSeconds(_scanIntervalSeconds), ct).ConfigureAwait(false); } catch { break; }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "QueueScannerLoop terminated unexpectedly");
+            }
+        }
+
+        private Task ScanPrintQueuesAsync(CancellationToken ct)
+        {
+            return Task.Run(() =>
+            {
+                try
+                {
+                    using var server = new LocalPrintServer();
+
+                    foreach (var queueInfo in server.GetPrintQueues(new[] { EnumeratedPrintQueueTypes.Local, EnumeratedPrintQueueTypes.Connections, EnumeratedPrintQueueTypes.Shared }))
+                    {
+                        if (ct.IsCancellationRequested) break;
+
+                        try
+                        {
+                            using var queue = server.GetPrintQueue(queueInfo.Name);
+                            queue.Refresh();
+
+                            var groups = new Dictionary<string, (int Count, int JobId, string Doc, string Owner)>();
+
+                            var jobs = queue.GetPrintJobInfoCollection();
+                            foreach (PrintSystemJobInfo job in jobs)
+                            {
+                                try
+                                {
+                                    // Filter by status via reflection to avoid compile-time dependency on specific API surface
+                                    try
+                                    {
+                                        var statusProp = job.GetType().GetProperty("JobStatus");
+                                        var statusVal = statusProp?.GetValue(job);
+                                        string statusStr = statusVal?.ToString() ?? string.Empty;
+                                        // allow common printing/spooling statuses, ignore others
+                                        if (!string.IsNullOrEmpty(statusStr) && !(statusStr.IndexOf("Print", StringComparison.OrdinalIgnoreCase) >= 0 || statusStr.IndexOf("Spool", StringComparison.OrdinalIgnoreCase) >= 0))
+                                        {
+                                            continue;
+                                        }
+                                    }
+                                    catch { }
+
+                                    // Filter by job age (if available via reflection)
+                                    try
+                                    {
+                                        var timeProps = new[] { "TimeJobSubmitted", "TimeSubmitted", "SubmitTime", "SubmittedTime" };
+                                        DateTime? submitted = null;
+                                        foreach (var pname in timeProps)
+                                        {
+                                            var pi = job.GetType().GetProperty(pname);
+                                            if (pi == null) continue;
+                                            var val = pi.GetValue(job);
+                                            if (val == null) continue;
+                                            if (val is DateTime dt)
+                                            {
+                                                submitted = dt;
+                                                break;
+                                            }
+                                            if (DateTime.TryParse(val.ToString(), out var parsed))
+                                            {
+                                                submitted = parsed;
+                                                break;
+                                            }
+                                        }
+
+                                        if (submitted.HasValue)
+                                        {
+                                            if ((DateTime.Now - submitted.Value).TotalSeconds > _jobAgeThresholdSeconds)
+                                            {
+                                                // job too old, ignore
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    catch { }
+
+                                    string doc = job.Name ?? string.Empty;
+                                    string owner = job.Submitter ?? string.Empty;
+                                    int jid = job.JobIdentifier;
+                                    string signature = string.Join("|", queue.Name ?? string.Empty, doc, owner);
+
+                                    if (!groups.TryGetValue(signature, out var entry))
+                                    {
+                                        groups[signature] = (1, jid, doc, owner);
+                                    }
+                                    else
+                                    {
+                                        groups[signature] = (entry.Count + 1, entry.JobId, entry.Doc, entry.Owner);
+                                    }
+                                }
+                                catch (Exception jex)
+                                {
+                                    _logger.LogDebug(jex, "Error iterating print jobs on queue {Queue}", queueInfo.Name);
+                                }
+                            }
+
+                            foreach (var kv in groups)
+                            {
+                                var sig = kv.Key;
+                                var val = kv.Value;
+                                if (val.Count > 1)
+                                {
+                                    try
+                                    {
+                                        var info = new PrintJobInfo
+                                        {
+                                            Name = $"{queue.Name}, {val.JobId}",
+                                            Document = val.Doc,
+                                            Owner = val.Owner,
+                                            Copies = val.Count,
+                                            Path = string.Empty
+                                        };
+
+                                        _logger.LogInformation("ScannerDetectedMultiCopy: Printer={Printer}, Doc={Document}, Owner={Owner}, Copies={Copies}", queue.Name, val.Doc, val.Owner, val.Count);
+
+                                        // Hand off to existing processing logic
+                                        ProcessPrintJobInfo(info);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.LogError(ex, "Error processing scanner-detected multi-copy job for signature {Sig}", sig);
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception qex)
+                        {
+                            _logger.LogDebug(qex, "Error scanning queue {Queue}", queueInfo.Name);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "ScanPrintQueuesAsync failed");
+                }
+            });
         }
 
         // Public helper to simulate a user clicking OK (creates a .ok file)
@@ -398,6 +594,40 @@ namespace ServizioAntiCopieMultiple
 
                 string jobId = PrintJobParser.ParseJobId(name);
                 int copies = PrintJobParser.GetCopiesFromManagementObject(target);
+
+                // Attempt to infer copies by aggregating recent creation events with same signature
+                try
+                {
+                    string printer = null;
+                    try
+                    {
+                        int commaIdx = name?.LastIndexOf(',') ?? -1;
+                        printer = (commaIdx >= 0) ? name.Substring(0, commaIdx).Trim() : (name ?? "");
+                    }
+                    catch { printer = name ?? string.Empty; }
+
+                    string signature = string.Join("|", printer, document ?? string.Empty, owner ?? string.Empty);
+                    long now = DateTime.UtcNow.Ticks;
+                    var queue = _recentJobSignatures.GetOrAdd(signature, _ => new ConcurrentQueue<long>());
+                    queue.Enqueue(now);
+
+                    // Remove old entries
+                    while (queue.TryPeek(out long t) && TimeSpan.FromTicks(now - t) > SignatureWindow)
+                    {
+                        queue.TryDequeue(out _);
+                    }
+
+                    int recentCount = queue.Count;
+                    if (recentCount > copies)
+                    {
+                        _logger.LogInformation("InferredCopies: increased copies from {Old} to {New} based on {Count} recent events for signature {Sig}", copies, recentCount, recentCount, signature);
+                        copies = recentCount;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed inferring copies from recent signatures");
+                }
 
                 // Log received event at Information level so events are visible in logs even when Copies == 1
                 try
