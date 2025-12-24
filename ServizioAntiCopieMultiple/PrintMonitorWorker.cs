@@ -29,7 +29,7 @@ namespace ServizioAntiCopieMultiple
         private readonly PrintJobProcessor _processor = new();
         private readonly PrintJobCanceller _canceller = new();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<long>> _recentJobSignatures = new();
-        private static readonly TimeSpan SignatureWindow = TimeSpan.FromSeconds(5);
+        private readonly TimeSpan _signatureWindow;
         private readonly int _scanIntervalSeconds;
         private readonly int _jobAgeThresholdSeconds; // ignore jobs older than this when scanning
 
@@ -46,27 +46,30 @@ namespace ServizioAntiCopieMultiple
                 // appsetting keys: PrintMonitor:ScanIntervalSeconds, PrintMonitor:JobAgeThresholdSeconds
                 int defaultScan = 5;
                 int defaultAge = 30;
+                int sigVal = 10;
 
-                int scanVal = config.GetValue<int?>("PrintMonitor:ScanIntervalSeconds") ?? (int?)null ?? defaultScan;
-                int ageVal = config.GetValue<int?>("PrintMonitor:JobAgeThresholdSeconds") ?? (int?)null ?? defaultAge;
-
-                // environment variable overrides if present
+                int scanVal = config.GetValue<int?>("PrintMonitor:ScanIntervalSeconds") ?? defaultScan;
+                int ageVal = config.GetValue<int?>("PrintMonitor:JobAgeThresholdSeconds") ?? defaultAge;
                 var envScan = Environment.GetEnvironmentVariable("SACM_SCAN_INTERVAL_SECONDS");
                 var envAge = Environment.GetEnvironmentVariable("SACM_JOB_AGE_THRESHOLD_SECONDS");
                 if (int.TryParse(envScan, out var s)) scanVal = s;
                 if (int.TryParse(envAge, out var a)) ageVal = a;
+                var envSig = Environment.GetEnvironmentVariable("SACM_SIGNATURE_WINDOW_SECONDS");
+                if (int.TryParse(envSig, out var sv)) sigVal = sv;
 
                 _scanIntervalSeconds = Math.Max(1, scanVal);
                 _jobAgeThresholdSeconds = Math.Max(1, ageVal);
+                _signatureWindow = TimeSpan.FromSeconds(Math.Max(1, sigVal));
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to read PrintMonitor configuration; using defaults");
                 _scanIntervalSeconds = 5;
                 _jobAgeThresholdSeconds = 30;
+                _signatureWindow = TimeSpan.FromSeconds(10);
             }
 
-            _logger.LogInformation("PrintMonitor configuration: ScanIntervalSeconds={ScanInterval}, JobAgeThresholdSeconds={JobAge}", _scanIntervalSeconds, _jobAgeThresholdSeconds);
+            _logger.LogInformation("PrintMonitor configuration: ScanIntervalSeconds={ScanInterval}, JobAgeThresholdSeconds={JobAge}, SignatureWindowSeconds={SigWindow}", _scanIntervalSeconds, _jobAgeThresholdSeconds, _signatureWindow.TotalSeconds);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -622,7 +625,7 @@ namespace ServizioAntiCopieMultiple
                     queue.Enqueue(now);
 
                     // Remove old entries
-                    while (queue.TryPeek(out long t) && TimeSpan.FromTicks(now - t) > SignatureWindow)
+                    while (queue.TryPeek(out long t) && TimeSpan.FromTicks(now - t) > _signatureWindow)
                     {
                         queue.TryDequeue(out _);
                     }
