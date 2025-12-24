@@ -171,6 +171,9 @@ namespace ServizioAntiCopieMultiple
                     {
                         if (ct.IsCancellationRequested) break;
 
+                        // Some PrintQueueInfo entries can have null/empty Name on some platforms; skip them
+                        if (string.IsNullOrEmpty(queueInfo?.Name)) continue;
+
                         try
                         {
                             using var queue = server.GetPrintQueue(queueInfo.Name);
@@ -261,7 +264,7 @@ namespace ServizioAntiCopieMultiple
                                     {
                                         var info = new PrintJobInfo
                                         {
-                                            Name = $"{queue.Name}, {val.JobId}",
+                                            Name = $"{queue.Name ?? string.Empty}, {val.JobId}",
                                             Document = val.Doc,
                                             Owner = val.Owner,
                                             Copies = val.Count,
@@ -602,11 +605,11 @@ namespace ServizioAntiCopieMultiple
                     try
                     {
                         int commaIdx = name?.LastIndexOf(',') ?? -1;
-                        printer = (commaIdx >= 0) ? name.Substring(0, commaIdx).Trim() : (name ?? "");
+                        printer = (commaIdx >= 0) ? name.Substring(commaIdx + 1) : name; // store full or id part
                     }
                     catch { printer = name ?? string.Empty; }
 
-                    string signature = string.Join("|", printer, document ?? string.Empty, owner ?? string.Empty);
+                    string signature = string.Join("|", printer ?? string.Empty, document ?? string.Empty, owner ?? string.Empty);
                     long now = DateTime.UtcNow.Ticks;
                     var queue = _recentJobSignatures.GetOrAdd(signature, _ => new ConcurrentQueue<long>());
                     queue.Enqueue(now);
