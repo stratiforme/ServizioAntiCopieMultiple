@@ -29,9 +29,11 @@ namespace ServizioAntiCopieMultiple
         private readonly PrintJobProcessor _processor = new();
         private readonly PrintJobCanceller _canceller = new();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<long>> _recentJobSignatures = new();
+        private readonly ConcurrentDictionary<string, JobSequence> _sequenceTrackers = new();
         private readonly TimeSpan _signatureWindow;
         private readonly int _scanIntervalSeconds;
         private readonly int _jobAgeThresholdSeconds; // ignore jobs older than this when scanning
+        private readonly bool _enableScanner;
 
         public PrintMonitorWorker(ILogger<PrintMonitorWorker> logger, IConfiguration config)
         {
@@ -60,6 +62,12 @@ namespace ServizioAntiCopieMultiple
                 _scanIntervalSeconds = Math.Max(1, scanVal);
                 _jobAgeThresholdSeconds = Math.Max(1, ageVal);
                 _signatureWindow = TimeSpan.FromSeconds(Math.Max(1, sigVal));
+
+                // Enable scanner only when interactive by default; can be forced via config/env
+                bool cfgEnable = config.GetValue<bool?>("PrintMonitor:EnableScannerInService") ?? false;
+                var envEnable = Environment.GetEnvironmentVariable("SACM_ENABLE_SCANNER_IN_SERVICE");
+                if (bool.TryParse(envEnable, out var envBool)) cfgEnable = envBool;
+                _enableScanner = cfgEnable;
             }
             catch (Exception ex)
             {
@@ -67,6 +75,7 @@ namespace ServizioAntiCopieMultiple
                 _scanIntervalSeconds = 5;
                 _jobAgeThresholdSeconds = 30;
                 _signatureWindow = TimeSpan.FromSeconds(10);
+                _enableScanner = false;
             }
 
             _logger.LogInformation("PrintMonitor configuration: ScanIntervalSeconds={ScanInterval}, JobAgeThresholdSeconds={JobAge}, SignatureWindowSeconds={SigWindow}", _scanIntervalSeconds, _jobAgeThresholdSeconds, _signatureWindow.TotalSeconds);
@@ -111,8 +120,16 @@ namespace ServizioAntiCopieMultiple
                 // Start WMI connect in background to avoid blocking
                 _ = Task.Run(async () => await EnsureWmiWatcherAsync(stoppingToken).ConfigureAwait(false));
 
-                // Start periodic queue scanner fallback
-                _ = Task.Run(async () => await QueueScannerLoop(stoppingToken).ConfigureAwait(false));
+                // Start periodic queue scanner fallback only when interactive or explicitly enabled
+                if (Environment.UserInteractive || _enableScanner)
+                {
+                    _ = Task.Run(async () => await QueueScannerLoop(stoppingToken).ConfigureAwait(false));
+                    _logger.LogInformation("Queue scanner started (interactive={Interactive}, enabledByConfig={Cfg})", Environment.UserInteractive, _enableScanner);
+                }
+                else
+                {
+                    _logger.LogInformation("Queue scanner not started because running as service and not enabled by configuration. Set PrintMonitor:EnableScannerInService or SACM_ENABLE_SCANNER_IN_SERVICE=true to override.");
+                }
 
                 _logger.LogInformation("PrintMonitorWorker started and monitoring print jobs. Responses dir: {dir}", _responsesDir);
 
@@ -941,6 +958,14 @@ namespace ServizioAntiCopieMultiple
             {
                 _logger.LogDebug(ex, "SaveTargetDumpToFile: failed");
             }
+        }
+
+        internal sealed class JobSequence
+        {
+            public int LastId = 0;
+            public long LastTicks = 0L;
+            public int Count = 0;
+            public object Lock = new object();
         }
     }
 }
