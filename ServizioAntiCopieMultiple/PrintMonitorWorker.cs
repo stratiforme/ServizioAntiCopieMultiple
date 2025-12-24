@@ -601,15 +601,22 @@ namespace ServizioAntiCopieMultiple
                 // Attempt to infer copies by aggregating recent creation events with same signature
                 try
                 {
-                    string printer = null;
-                    try
+                    // Compute a stable signature (printer|document|owner) in a null-safe way
+                    string printer;
+                    if (!string.IsNullOrEmpty(name))
                     {
-                        int commaIdx = name?.LastIndexOf(',') ?? -1;
-                        printer = (commaIdx >= 0) ? name.Substring(commaIdx + 1) : name; // store full or id part
+                        int commaIdx = name.LastIndexOf(',');
+                        if (commaIdx >= 0)
+                            printer = name.Substring(0, commaIdx).Trim();
+                        else
+                            printer = name;
                     }
-                    catch { printer = name ?? string.Empty; }
+                    else
+                    {
+                        printer = string.Empty;
+                    }
 
-                    string signature = string.Join("|", printer ?? string.Empty, document ?? string.Empty, owner ?? string.Empty);
+                    string signature = string.Join("|", printer, document ?? string.Empty, owner ?? string.Empty);
                     long now = DateTime.UtcNow.Ticks;
                     var queue = _recentJobSignatures.GetOrAdd(signature, _ => new ConcurrentQueue<long>());
                     queue.Enqueue(now);
@@ -656,9 +663,9 @@ namespace ServizioAntiCopieMultiple
                 // Build PrintJobInfo and hand off to common processor
                 var info = new PrintJobInfo
                 {
-                    Name = name,
-                    Document = document,
-                    Owner = owner,
+                    Name = name, // nullable allowed
+                    Document = document ?? string.Empty,
+                    Owner = owner ?? string.Empty,
                     Copies = copies,
                     Path = target["__PATH"]?.ToString() ?? string.Empty
                 };
