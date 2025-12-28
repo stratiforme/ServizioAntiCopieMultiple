@@ -29,13 +29,13 @@ jobs:
           dotnet build ServizioAntiCopieMultiple/ServizioAntiCopieMultiple.csproj -c Release --no-restore
           dotnet build GestioneSACM/GestioneSACM.csproj -c Release --no-restore
 
-      - name: Publish ServizioAntiCopieMultiple -> publish/win-x64/ServizioAntiCopieMultiple
+      - name: Publish ServizioAntiCopieMultiple -> publish/win-x64
         run: |
-          dotnet publish ServizioAntiCopieMultiple/ServizioAntiCopieMultiple.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=false /p:PublishReadyToRun=true /p:IncludeNativeLibrariesForSelfExtract=true -o ${{ github.workspace }}/publish/win-x64/ServizioAntiCopieMultiple
+          dotnet publish ServizioAntiCopieMultiple/ServizioAntiCopieMultiple.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=false /p:PublishReadyToRun=true /p:IncludeNativeLibrariesForSelfExtract=true -o ${{ github.workspace }}/publish/win-x64
 
-      - name: Publish GestioneSACM -> publish/win-x64/GestioneSACM
+      - name: Publish GestioneSACM -> publish/win-x64
         run: |
-          dotnet publish GestioneSACM/GestioneSACM.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=false /p:PublishReadyToRun=true /p:IncludeNativeLibrariesForSelfExtract=true -o ${{ github.workspace }}/publish/win-x64/GestioneSACM
+          dotnet publish GestioneSACM/GestioneSACM.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=false /p:PublishReadyToRun=true /p:IncludeNativeLibrariesForSelfExtract=true -o ${{ github.workspace }}/publish/win-x64
 
       - name: List published files
         run: dir publish\win-x64 || echo "No published files"
@@ -44,12 +44,6 @@ jobs:
         if: always()
         run: |
           powershell -NoLogo -NoProfile -Command "Push-Location '${{ github.workspace }}\publish\win-x64'; Compress-Archive -Path * -DestinationPath '${{ github.workspace }}\publish\apps-win-x64.zip' -Force; Pop-Location"
-
-      - name: Upload published folder artifact (individual files)
-        uses: actions/upload-artifact@v4
-        with:
-          name: apps-win-x64-folder
-          path: publish/win-x64/
 
       - name: Upload combined ZIP artifact
         if: always()
