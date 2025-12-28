@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Printing;
 using Microsoft.Extensions.Configuration;
+using System.Runtime.InteropServices;
 
 namespace ServizioAntiCopieMultiple
 {
@@ -618,35 +619,50 @@ namespace ServizioAntiCopieMultiple
                 string jobId = PrintJobParser.ParseJobId(name);
                 int copies = PrintJobParser.GetCopiesFromManagementObject(target);
 
-                // Attempt to infer copies by aggregating recent creation events with same signature
+                // Try native DEVMODE/GetJob
+                if (copies <= 1)
+                {
+                    try
+                    {
+                        var native = NativeSpool.TryGetCopiesFromW32Job(name);
+                        if (native.HasValue && native.Value > copies)
+                        {
+                            _logger.LogInformation("DEVMODECopiesDetected: increased copies from {Old} to {New} for job {JobId}", copies, native.Value, jobId);
+                            copies = native.Value;
+                        }
+                    }
+                    catch (Exception ex) { _logger.LogDebug(ex, "DEVMODE detection failed for job {JobId}", jobId); }
+                }
+
+                // 2) Try PrintTicket XML
+                if (copies <= 1)
+                {
+                    try
+                    {
+                        var ptObj = target["PrintTicket"] ?? target["PrintTicketXML"] ?? target["PrintTicketData"];
+                        if (ptObj != null)
+                        {
+                            string ptXml = ptObj.ToString() ?? string.Empty;
+                            var parsed = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
+                            if (parsed.HasValue && parsed.Value > copies)
+                            {
+                                _logger.LogInformation("PrintTicketCopiesDetected: increased copies from {Old} to {New} for job {JobId}", copies, parsed.Value, jobId);
+                                copies = parsed.Value;
+                            }
+                        }
+                    }
+                    catch (Exception ex) { _logger.LogDebug(ex, "PrintTicket detection failed for job {JobId}", jobId); }
+                }
+
+                // 3) Aggregate recent events (signature heuristic)
                 try
                 {
-                    // Compute a stable signature (printer|document|owner) in a null-safe way
-                    string printer;
-                    if (!string.IsNullOrEmpty(name))
-                    {
-                        int commaIdx = name.LastIndexOf(',');
-                        if (commaIdx >= 0)
-                            printer = name.Substring(0, commaIdx).Trim();
-                        else
-                            printer = name;
-                    }
-                    else
-                    {
-                        printer = string.Empty;
-                    }
-
+                    string printer = !string.IsNullOrEmpty(name) ? (name.LastIndexOf(',') >= 0 ? name.Substring(0, name.LastIndexOf(',')).Trim() : name) : string.Empty;
                     string signature = string.Join("|", printer, document ?? string.Empty, owner ?? string.Empty);
                     long now = DateTime.UtcNow.Ticks;
                     var queue = _recentJobSignatures.GetOrAdd(signature, _ => new ConcurrentQueue<long>());
                     queue.Enqueue(now);
-
-                    // Remove old entries
-                    while (queue.TryPeek(out long t) && TimeSpan.FromTicks(now - t) > _signatureWindow)
-                    {
-                        queue.TryDequeue(out _);
-                    }
-
+                    while (queue.TryPeek(out long t) && TimeSpan.FromTicks(now - t) > _signatureWindow) queue.TryDequeue(out _);
                     int recentCount = queue.Count;
                     if (recentCount > copies)
                     {
@@ -654,10 +670,7 @@ namespace ServizioAntiCopieMultiple
                         copies = recentCount;
                     }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Failed inferring copies from recent signatures");
-                }
+                catch (Exception ex) { _logger.LogDebug(ex, "Failed inferring copies from recent signatures"); }
 
                 // Log received event at Information level so events are visible in logs even when Copies == 1
                 try
@@ -966,6 +979,102 @@ namespace ServizioAntiCopieMultiple
             public long LastTicks = 0L;
             public int Count = 0;
             public object Lock = new object();
+        }
+
+        // Native spool helper: best-effort read of JOB_INFO_2 / DEVMODE via GetJob
+        private static class NativeSpool
+        {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            internal struct DEVMODE
+            {
+                [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+                public short dmSpecVersion;
+                public short dmDriverVersion;
+                public short dmSize;
+                public short dmDriverExtra;
+                public int dmFields;
+                public short dmOrientation;
+                public short dmPaperSize;
+                public short dmPaperLength;
+                public short dmPaperWidth;
+                public short dmScale;
+                public short dmCopies;
+                // rest omitted
+            }
+
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            internal struct JOB_INFO_2
+            {
+                public IntPtr pPrinterName;
+                public IntPtr pMachineName;
+                public IntPtr pUserName;
+                public IntPtr pDocument;
+                public IntPtr pDatatype;
+                public IntPtr pStatus;
+                public IntPtr pStatusMask;
+                public int JobId;
+                public IntPtr pJobTime;
+                public IntPtr pSubmitted;
+                public int TotalPages;
+                public int PagesPrinted;
+                public IntPtr pDevMode;
+                // rest omitted
+            }
+
+            [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+            internal static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
+            [DllImport("winspool.drv", SetLastError = true)]
+            internal static extern bool ClosePrinter(IntPtr hPrinter);
+            [DllImport("winspool.drv", SetLastError = true)]
+            internal static extern bool GetJob(IntPtr hPrinter, int JobId, int Level, IntPtr pJob, int cbBuf, out int pcbNeeded);
+
+            internal static int? TryGetCopiesFromW32Job(string? name)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(name)) return null;
+                    int comma = name.LastIndexOf(',');
+                    string printer = comma >= 0 ? name.Substring(0, comma).Trim() : name.Trim();
+                    string idStr = comma >= 0 && comma + 1 < name.Length ? name.Substring(comma + 1).Trim() : string.Empty;
+                    if (string.IsNullOrEmpty(printer) || string.IsNullOrEmpty(idStr) || !int.TryParse(idStr, out var jid)) return null;
+
+                    if (!OpenPrinter(printer, out var hPrinter, IntPtr.Zero)) return null;
+                    try
+                    {
+                        int needed = 0;
+                        GetJob(hPrinter, jid, 2, IntPtr.Zero, 0, out needed);
+                        if (needed <= 0) return null;
+                        var p = Marshal.AllocHGlobal(needed);
+                        try
+                        {
+                            if (!GetJob(hPrinter, jid, 2, p, needed, out needed)) return null;
+                            var ji = Marshal.PtrToStructure<JOB_INFO_2>(p);
+                            if (ji.pDevMode != IntPtr.Zero)
+                            {
+                                try
+                                {
+                                    var dev = Marshal.PtrToStructure<DEVMODE>(ji.pDevMode);
+                                    if (dev.dmCopies > 0) return dev.dmCopies;
+                                }
+                                catch { }
+                            }
+
+                            if (ji.TotalPages > 1) return ji.TotalPages;
+                        }
+                        finally
+                        {
+                            Marshal.FreeHGlobal(p);
+                        }
+                    }
+                    finally
+                    {
+                        ClosePrinter(hPrinter);
+                    }
+                }
+                catch { }
+
+                return null;
+            }
         }
     }
 }

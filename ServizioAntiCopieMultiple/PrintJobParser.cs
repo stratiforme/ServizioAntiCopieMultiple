@@ -13,7 +13,6 @@ namespace ServizioAntiCopieMultiple
 
             try
             {
-                // Avoid allocating arrays where possible: find last comma and take remainder
                 int comma = name.LastIndexOf(',');
                 if (comma >= 0 && comma + 1 < name.Length)
                     return name.Substring(comma + 1).Trim();
@@ -47,13 +46,11 @@ namespace ServizioAntiCopieMultiple
             }
             catch
             {
-                // ignore and return default
             }
 
             return 1;
         }
 
-        // New helper to extract copies from a WMI ManagementBaseObject with improved heuristics
         public static int GetCopiesFromManagementObject(ManagementBaseObject? target)
         {
             if (target == null)
@@ -61,17 +58,13 @@ namespace ServizioAntiCopieMultiple
 
             try
             {
-                // 1) Prefer explicit Copies property
                 var copiesObj = target["Copies"];
                 if (copiesObj != null)
                 {
-                    if (copiesObj is int ci)
-                        return ci;
-                    if (int.TryParse(copiesObj.ToString(), out var parsed))
-                        return parsed;
+                    if (copiesObj is int ci) return ci;
+                    if (int.TryParse(copiesObj.ToString(), out var parsed)) return parsed;
                 }
 
-                // 2) Try to infer copies from TotalPages and a per-document page count if available
                 int totalPages = 0;
                 var totalObj = target["TotalPages"];
                 if (totalObj != null && int.TryParse(totalObj.ToString(), out var tp))
@@ -91,25 +84,72 @@ namespace ServizioAntiCopieMultiple
 
                 if (pagesPerDoc > 0 && totalPages > 0)
                 {
-                    // estimate copies as totalPages / pagesPerDoc (round up)
                     int inferred = Math.Max(1, (totalPages + pagesPerDoc - 1) / pagesPerDoc);
                     return inferred;
                 }
 
-                // 3) Fallback: some drivers report TotalPages already multiplied by copies (no per-doc pages property)
                 if (totalPages > 1)
                 {
-                    // Treat TotalPages as likely indicator of multiple copies when no other info available
-                    // Cap to a reasonable max to avoid absurd values from misreported properties
                     return Math.Min(totalPages, 1000);
+                }
+
+                try
+                {
+                    var ptObj = target["PrintTicket"] ?? target["PrintTicketXML"] ?? target["PrintTicketData"];
+                    if (ptObj != null)
+                    {
+                        string ptXml = ptObj.ToString() ?? string.Empty;
+                        if (!string.IsNullOrEmpty(ptXml))
+                        {
+                            var ptCopies = ParseCopiesFromPrintTicketXml(ptXml);
+                            if (ptCopies.HasValue && ptCopies.Value > 0) return ptCopies.Value;
+                        }
+                    }
+                }
+                catch
+                {
                 }
             }
             catch
             {
-                // ignore and fallthrough
             }
 
             return 1;
+        }
+
+        private static int? ParseCopiesFromPrintTicketXml(string xml)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(xml)) return null;
+
+                string lower = xml.ToLowerInvariant();
+                var tags = new[] { "jobcopies", "copycount", "copy-count", "copies" };
+                foreach (var tag in tags)
+                {
+                    string open = "<" + tag + ">";
+                    string close = "</" + tag + ">";
+                    int oi = lower.IndexOf(open);
+                    if (oi >= 0)
+                    {
+                        int ci = lower.IndexOf(close, oi + open.Length);
+                        if (ci > oi)
+                        {
+                            string inner = lower.Substring(oi + open.Length, ci - (oi + open.Length)).Trim();
+                            var m = System.Text.RegularExpressions.Regex.Match(inner, "\\d+");
+                            if (m.Success && int.TryParse(m.Value, out var v)) return v;
+                        }
+                    }
+                }
+
+                var ma = System.Text.RegularExpressions.Regex.Match(lower, "copy(?:count|-count)?=\"?(\\d+)\"?" );
+                if (ma.Success && int.TryParse(ma.Groups[1].Value, out var av)) return av;
+            }
+            catch
+            {
+            }
+
+            return null;
         }
     }
 }

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.EventLog;
 using Serilog;
 using Serilog.Events;
 using ServizioAntiCopieMultiple;
+using Microsoft.Extensions.Configuration;
 
 [assembly: SupportedOSPlatform("windows")]
 
@@ -57,6 +58,11 @@ try
 {
     var builder = Host.CreateDefaultBuilder(args)
         .UseSerilog()
+        .ConfigureAppConfiguration((ctx, cfg) =>
+        {
+            // allow appsettings.json to configure PrintMonitor
+            cfg.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
+        })
         .ConfigureLogging((context, logging) =>
         {
             logging.ClearProviders();
