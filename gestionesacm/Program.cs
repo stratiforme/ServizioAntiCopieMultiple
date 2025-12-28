@@ -29,7 +29,7 @@ bool TryRestartAsAdmin()
 {
     try
     {
-        var exe = Environment.ProcessPath ?? System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+        var exe = Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName;
         if (string.IsNullOrEmpty(exe)) return false;
         var args = string.Join(' ', Environment.GetCommandLineArgs().Skip(1).Select(a => a.Contains(' ') ? '"' + a + '"' : a));
         var psi = new ProcessStartInfo(exe, args)
@@ -90,17 +90,21 @@ void ShowMenu()
     }
 
     Console.WriteLine('\n' + "Scegli un'azione:");
+    // Make choices stable and logical
     if (!isInstalled)
     {
         Console.WriteLine("1) Installa servizio");
+        // no unrelated utilities here
+        Console.WriteLine("0) Esci");
     }
     else
     {
         Console.WriteLine("1) Disinstalla servizio");
-        Console.WriteLine("2) Avvia servizio");
+        Console.WriteLine("2) Avvia servizio come servizio di Windows");
         Console.WriteLine("3) Ferma servizio");
+        Console.WriteLine("4) Esegui servizio in modalità console (--console) (utile per debug/diagnostica)");
+        Console.WriteLine("0) Esci");
     }
-    Console.WriteLine("0) Esci");
 }
 
 string? FindServiceExe()
@@ -165,8 +169,8 @@ bool TryInstallService(out string message)
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        using var p = Process.Start(psi);
-        string output = p!.StandardOutput.ReadToEnd();
+        using var p = Process.Start(psi)!;
+        string output = p.StandardOutput.ReadToEnd();
         p.WaitForExit();
         message = output;
 
@@ -213,8 +217,8 @@ bool TryUninstallService(out string message)
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        using var p = Process.Start(psi);
-        string output = p!.StandardOutput.ReadToEnd();
+        using var p = Process.Start(psi)!;
+        string output = p.StandardOutput.ReadToEnd();
         p.WaitForExit();
         message = output;
 
@@ -301,6 +305,49 @@ bool TryStopService(out string message)
     }
 }
 
+bool TryRunServiceConsole(out string message)
+{
+    // Start the service executable with --console to run in foreground. This does not require admin
+    try
+    {
+        var exe = FindServiceExe();
+        if (string.IsNullOrEmpty(exe))
+        {
+            message = "Eseguibile del servizio non trovato.";
+            return false;
+        }
+
+        var psi = new ProcessStartInfo(exe, "--console")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = false
+        };
+
+        var proc = Process.Start(psi);
+        if (proc == null)
+        {
+            message = "Impossibile avviare il processo.";
+            return false;
+        }
+
+        // Stream output to current console
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
+        proc.OutputDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
+        proc.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.Error.WriteLine(e.Data); };
+
+        message = $"Servizio avviato in modalità console (PID {proc.Id}). Premi invio per terminare il processo e ritornare al menu.";
+        return true;
+    }
+    catch (Exception ex)
+    {
+        message = ex.Message;
+        return false;
+    }
+}
+
 // Ensure elevated privileges at startup when possible
 EnsureElevated();
 
@@ -312,8 +359,8 @@ while (true)
     if (string.IsNullOrWhiteSpace(ch)) continue;
     if (ch == "0") break;
 
-    string resultMsg;
-    bool ok;
+    string resultMsg = string.Empty;
+    bool ok = false;
     if (ch == "1")
     {
         bool isInstalled = ServiceController.GetServices().Any(s => s.ServiceName.Equals(serviceName, StringComparison.OrdinalIgnoreCase));
@@ -337,6 +384,31 @@ while (true)
     {
         ok = TryStopService(out resultMsg);
         Console.WriteLine(ok ? resultMsg : "Arresto fallito: " + resultMsg);
+    }
+    else if (ch == "4")
+    {
+        ok = TryRunServiceConsole(out resultMsg);
+        Console.WriteLine(ok ? resultMsg : "Avvio in console fallito: " + resultMsg);
+        if (ok)
+        {
+            Console.WriteLine("Premi invio per terminare il processo in foreground e tornare al menu...");
+            Console.ReadLine();
+            // Attempt to kill any child process started with --console
+            // Note: for simplicity we attempt to find processes with the same exe name and kill the most recent one
+            try
+            {
+                var exe = Path.GetFileName(FindServiceExe() ?? string.Empty);
+                if (!string.IsNullOrEmpty(exe))
+                {
+                    var procs = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(exe));
+                    foreach (var p in procs.OrderByDescending(p => p.StartTime).Take(1))
+                    {
+                        try { p.Kill(); } catch { }
+                    }
+                }
+            }
+            catch { }
+        }
     }
 
     Console.WriteLine("Premi invio per continuare...");

@@ -29,15 +29,41 @@ catch (Exception)
 
 string logFilePath = Path.Combine(logsDir, "service-.log"); // Serilog rolling file pattern
 
+// Determine minimum log level: default depends on run mode, but allow override via env var SACM_LOG_LEVEL
+LogEventLevel defaultLevel = runAsService ? LogEventLevel.Information : LogEventLevel.Debug;
+var envLevel = Environment.GetEnvironmentVariable("SACM_LOG_LEVEL");
+if (!string.IsNullOrWhiteSpace(envLevel))
+{
+    if (Enum.TryParse<LogEventLevel>(envLevel, true, out var parsed))
+    {
+        defaultLevel = parsed;
+    }
+    else
+    {
+        // allow short names like "warn" or "warning"
+        if (envLevel.Equals("warn", StringComparison.OrdinalIgnoreCase)) defaultLevel = LogEventLevel.Warning;
+        else if (envLevel.Equals("error", StringComparison.OrdinalIgnoreCase)) defaultLevel = LogEventLevel.Error;
+        else if (envLevel.Equals("information", StringComparison.OrdinalIgnoreCase) || envLevel.Equals("info", StringComparison.OrdinalIgnoreCase)) defaultLevel = LogEventLevel.Information;
+        else if (envLevel.Equals("debug", StringComparison.OrdinalIgnoreCase)) defaultLevel = LogEventLevel.Debug;
+        else if (envLevel.Equals("verbose", StringComparison.OrdinalIgnoreCase)) defaultLevel = LogEventLevel.Verbose;
+    }
+}
+
+// Console sink can be forced via SACM_ENABLE_CONSOLE=true (useful when running interactively but starting without --console)
+bool forceConsole = false;
+var envConsole = Environment.GetEnvironmentVariable("SACM_ENABLE_CONSOLE");
+if (!string.IsNullOrWhiteSpace(envConsole) && bool.TryParse(envConsole, out var cval)) forceConsole = cval;
+
+// Configure Serilog
 var loggerConfig = new LoggerConfiguration()
-    .MinimumLevel.Information()
+    .MinimumLevel.Is(defaultLevel)
     .Enrich.FromLogContext()
     .WriteTo.File(logFilePath, rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14);
 
-if (!runAsService)
+if (!runAsService || forceConsole)
 {
     // add console sink for interactive debugging
-    loggerConfig = loggerConfig.WriteTo.Console();
+    loggerConfig = loggerConfig.WriteTo.Console(restrictedToMinimumLevel: defaultLevel);
 }
 
 Log.Logger = loggerConfig.CreateLogger();

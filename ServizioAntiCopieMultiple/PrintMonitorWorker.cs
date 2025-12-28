@@ -12,6 +12,7 @@ using System.Text.Json;
 using System.Printing;
 using Microsoft.Extensions.Configuration;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace ServizioAntiCopieMultiple
 {
@@ -624,7 +625,12 @@ namespace ServizioAntiCopieMultiple
                 {
                     try
                     {
-                        var native = NativeSpool.TryGetCopiesFromW32Job(name);
+                        var native = NativeSpool.TryGetCopiesFromW32Job(name, out var nativeDebug);
+                        if (!string.IsNullOrEmpty(nativeDebug) && _logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
+                        {
+                            _logger.LogDebug("NativeSpool debug: {Debug}", nativeDebug);
+                        }
+
                         if (native.HasValue && native.Value > copies)
                         {
                             _logger.LogInformation("DEVMODECopiesDetected: increased copies from {Old} to {New} for job {JobId}", copies, native.Value, jobId);
@@ -643,11 +649,33 @@ namespace ServizioAntiCopieMultiple
                         if (ptObj != null)
                         {
                             string ptXml = ptObj.ToString() ?? string.Empty;
-                            var parsed = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
-                            if (parsed.HasValue && parsed.Value > copies)
+
+                            // Save print ticket to diagnostics for deeper analysis
+                            try
                             {
-                                _logger.LogInformation("PrintTicketCopiesDetected: increased copies from {Old} to {New} for job {JobId}", copies, parsed.Value, jobId);
-                                copies = parsed.Value;
+                                if (!string.IsNullOrEmpty(ptXml))
+                                {
+                                    string ptFile = Path.Combine(_diagnosticsDir, $"printticket_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.xml");
+                                    File.WriteAllText(ptFile, ptXml);
+                                    _logger.LogInformation("DiagnosticsDumpSaved: PrintTicket XML saved to {Path}", ptFile);
+
+                                    var parsed = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
+                                    if (parsed.HasValue)
+                                    {
+                                        _logger.LogDebug("PrintTicketParser: parsed copies={Copies} from PrintTicket for job {JobId}", parsed.Value, jobId);
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogDebug(ex, "Failed saving PrintTicket XML for diagnostics");
+                            }
+
+                            var parsed2 = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
+                            if (parsed2.HasValue && parsed2.Value > copies)
+                            {
+                                _logger.LogInformation("PrintTicketCopiesDetected: increased copies from {Old} to {New} for job {JobId}", copies, parsed2.Value, jobId);
+                                copies = parsed2.Value;
                             }
                         }
                     }
@@ -735,6 +763,21 @@ namespace ServizioAntiCopieMultiple
                 if (_logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
                 {
                     _logger.LogDebug("TargetInstance properties dump: {Props}", JsonSerializer.Serialize(props));
+
+                    // Log some additional commonly useful fields at debug level for easier inspection
+                    void TryLogField(string field)
+                    {
+                        if (props.TryGetValue(field, out var v) && !string.IsNullOrEmpty(v))
+                        {
+                            _logger.LogDebug("TargetInstance field: {Field} = {Value}", field, v);
+                        }
+                    }
+
+                    TryLogField("PrintProcessor");
+                    TryLogField("Parameters");
+                    TryLogField("Notify");
+                    TryLogField("SubmissionTime");
+                    TryLogField("TimeSubmitted");
                 }
             }
             catch (Exception ex)
@@ -966,6 +1009,26 @@ namespace ServizioAntiCopieMultiple
                 var opts = new JsonSerializerOptions { WriteIndented = true };
                 File.WriteAllText(path, JsonSerializer.Serialize(props, opts));
                 _logger.LogInformation("DiagnosticsDumpSaved: WMI TargetInstance properties saved to {Path}", path);
+
+                // If PrintTicket present, also save separately (helps offline analysis)
+                try
+                {
+                    var ptObj = target["PrintTicket"] ?? target["PrintTicketXML"] ?? target["PrintTicketData"];
+                    if (ptObj != null)
+                    {
+                        string ptXml = ptObj.ToString() ?? string.Empty;
+                        if (!string.IsNullOrEmpty(ptXml))
+                        {
+                            string ptFile = Path.Combine(_diagnosticsDir, $"printticket_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.xml");
+                            File.WriteAllText(ptFile, ptXml);
+                            _logger.LogInformation("DiagnosticsDumpSaved: PrintTicket XML saved to {Path}", ptFile);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "SaveTargetDumpToFile: failed saving PrintTicket");
+                }
             }
             catch (Exception ex)
             {
@@ -1030,36 +1093,121 @@ namespace ServizioAntiCopieMultiple
 
             internal static int? TryGetCopiesFromW32Job(string? name)
             {
+                return TryGetCopiesFromW32Job(name, out _);
+            }
+
+            internal static int? TryGetCopiesFromW32Job(string? name, out string debug)
+            {
+                var sb = new StringBuilder();
+                debug = string.Empty;
                 try
                 {
-                    if (string.IsNullOrEmpty(name)) return null;
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        sb.AppendLine("name null or empty");
+                        debug = sb.ToString();
+                        return null;
+                    }
                     int comma = name.LastIndexOf(',');
                     string printer = comma >= 0 ? name.Substring(0, comma).Trim() : name.Trim();
                     string idStr = comma >= 0 && comma + 1 < name.Length ? name.Substring(comma + 1).Trim() : string.Empty;
-                    if (string.IsNullOrEmpty(printer) || string.IsNullOrEmpty(idStr) || !int.TryParse(idStr, out var jid)) return null;
+                    sb.AppendLine($"Parsed printer='{printer}', idStr='{idStr}'");
+                    if (string.IsNullOrEmpty(printer) || string.IsNullOrEmpty(idStr) || !int.TryParse(idStr, out var jid))
+                    {
+                        sb.AppendLine("Could not parse printer or job id from name");
+                        debug = sb.ToString();
+                        return null;
+                    }
 
-                    if (!OpenPrinter(printer, out var hPrinter, IntPtr.Zero)) return null;
+                    // Try open printer as-is
+                    if (!OpenPrinter(printer, out var hPrinter, IntPtr.Zero))
+                    {
+                        int err = Marshal.GetLastWin32Error();
+                        sb.AppendLine($"OpenPrinter failed for '{printer}' with error {err}");
+
+                        // Try alternative with server share prefix (common when printer name contains backslashes)
+                        string alt = printer;
+                        if (!printer.StartsWith("\\\\") && printer.Contains("\\"))
+                        {
+                            // try with double-escaped prefix
+                            alt = "\\\\" + printer.TrimStart('\\');
+                            sb.AppendLine($"Attempting OpenPrinter with alternative '{alt}'");
+                            if (!OpenPrinter(alt, out hPrinter, IntPtr.Zero))
+                            {
+                                int err2 = Marshal.GetLastWin32Error();
+                                sb.AppendLine($"OpenPrinter alternative failed with error {err2}");
+                                debug = sb.ToString();
+                                return null;
+                            }
+                        }
+                        else
+                        {
+                            debug = sb.ToString();
+                            return null;
+                        }
+                    }
+
                     try
                     {
                         int needed = 0;
-                        GetJob(hPrinter, jid, 2, IntPtr.Zero, 0, out needed);
-                        if (needed <= 0) return null;
+                        if (!GetJob(hPrinter, jid, 2, IntPtr.Zero, 0, out needed))
+                        {
+                            int err = Marshal.GetLastWin32Error();
+                            sb.AppendLine($"GetJob initial call returned false, needed={needed}, err={err}");
+                            if (needed <= 0)
+                            {
+                                debug = sb.ToString();
+                                return null;
+                            }
+                        }
+
+                        sb.AppendLine($"Allocating buffer of size {needed}");
                         var p = Marshal.AllocHGlobal(needed);
                         try
                         {
-                            if (!GetJob(hPrinter, jid, 2, p, needed, out needed)) return null;
+                            if (!GetJob(hPrinter, jid, 2, p, needed, out needed))
+                            {
+                                int err = Marshal.GetLastWin32Error();
+                                sb.AppendLine($"GetJob second call failed err={err}");
+                                debug = sb.ToString();
+                                return null;
+                            }
+
                             var ji = Marshal.PtrToStructure<JOB_INFO_2>(p);
+                            sb.AppendLine($"JOB_INFO_2.JobId={ji.JobId}, TotalPages={ji.TotalPages}, PagesPrinted={ji.PagesPrinted}, pDevMode={ji.pDevMode}");
+
                             if (ji.pDevMode != IntPtr.Zero)
                             {
                                 try
                                 {
                                     var dev = Marshal.PtrToStructure<DEVMODE>(ji.pDevMode);
-                                    if (dev.dmCopies > 0) return dev.dmCopies;
+                                    sb.AppendLine($"DEVMODE.dmCopies={dev.dmCopies}, dmSize={dev.dmSize}, dmDriverExtra={dev.dmDriverExtra}");
+                                    if (dev.dmCopies > 0)
+                                    {
+                                        debug = sb.ToString();
+                                        return dev.dmCopies;
+                                    }
                                 }
-                                catch { }
+                                catch (Exception ex)
+                                {
+                                    sb.AppendLine($"Failed marshalling DEVMODE: {ex.Message}");
+                                }
                             }
 
-                            if (ji.TotalPages > 1) return ji.TotalPages;
+                            if (ji.TotalPages > 1)
+                            {
+                                sb.AppendLine($"Using JOB_INFO_2.TotalPages={ji.TotalPages} as copies");
+                                debug = sb.ToString();
+                                return ji.TotalPages;
+                            }
+
+                            // As fallback, try to read document name and other fields by marshalling strings
+                            try
+                            {
+                                string doc = ji.pDocument != IntPtr.Zero ? Marshal.PtrToStringUni(ji.pDocument) ?? string.Empty : string.Empty;
+                                sb.AppendLine($"Document='{doc}'");
+                            }
+                            catch { }
                         }
                         finally
                         {
@@ -1071,8 +1219,12 @@ namespace ServizioAntiCopieMultiple
                         ClosePrinter(hPrinter);
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"Unexpected exception: {ex.Message}");
+                }
 
+                debug = sb.ToString();
                 return null;
             }
         }

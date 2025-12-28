@@ -49,10 +49,39 @@ Compilare localmente:
 
 ---
 
+## Diagnostica e debug
+
+Per facilitare l'analisi dei casi in cui il numero di copie non viene riconosciuto, il servizio supporta modalità più verbose e salvataggio di dump diagnostici.
+
+- Eseguire in console (debug):
+  - Avvia `ServizioAntiCopieMultiple.exe --console` per eseguire il servizio in foreground. In questa modalità il logger predefinito è `Debug` e viene abilitato il sink Console.
+
+- Variabili d'ambiente utili:
+  - `SACM_LOG_LEVEL`: fornisce un override per il livello minimo di log. Valori: `Verbose`, `Debug`, `Information`, `Warning`, `Error`, `Fatal`. Esempio PowerShell:
+    ```powershell
+    $env:SACM_LOG_LEVEL = 'Debug'
+    ```
+  - `SACM_ENABLE_CONSOLE`: se impostata a `true` forza il sink Console anche quando non si esegue con `--console`.
+    ```powershell
+    $env:SACM_ENABLE_CONSOLE = 'true'
+    ```
+
+- Cartelle diagnostiche (per default):
+  - Logs: `C:\ProgramData\ServizioAntiCopieMultiple\logs` (file rolling Serilog `service-*.log`).
+  - Diagnostics: `C:\ProgramData\ServizioAntiCopieMultiple\diagnostics` — qui vengono salvati i dump WMI (`wmi_*.json`) e, se presenti, i `PrintTicket` XML (`printticket_*.xml`).
+  - Responses/simulator (utilità del servizio): `C:\ProgramData\ServizioAntiCopieMultiple\responses` e `...\\simulator`.
+
+- Cosa viene registrato in più quando si abilita Debug:
+  - Dump completo delle proprietà WMI del `Win32_PrintJob` in `diagnostics`.
+  - Salvataggio separato del `PrintTicket` XML quando presente.
+  - Debug dettagliato del tentativo nativo `GetJob`/`DEVMODE` incluso valore `dmCopies` quando disponibile.
+
+---
+
 ## Note
 
-- Release ufficiali sono pensate per Windows x64. Il servizio usa API Windows-specifiche.
-- Testa l'installazione su una macchina Windows pulita prima di distribuire.
+- Il servizio tenterà di rilevare il numero di copie con più strategie: proprietà WMI (`Copies`, `TotalPages`), parsing `PrintTicket` XML e un tentativo best‑effort di leggere `DEVMODE`/`JOB_INFO_2` via Win32 `GetJob`. I tentativi nativi richiedono permessi e sono driver‑specifici.
+- Se vuoi assistenza nell'interpretare i dump presenti in `diagnostics`, copia i file e incollami il contenuto — posso analizzarli.
 
 ---
 
