@@ -198,7 +198,12 @@ namespace ServizioAntiCopieMultiple
 
                         try
                         {
-                            using var queue = server.GetPrintQueue(queueInfo.Name);
+                            // Use the PrintQueue instance returned by GetPrintQueues directly instead of
+                            // calling GetPrintQueue(name) which can fail if the queue was removed or the
+                            // name is not valid between enumeration and retrieval. Using the enumerated
+                            // instance is more robust against transient Win32 "invalid printer name" errors.
+                            using var queue = queueInfo;
+                            
                             queue.Refresh();
 
                             var groups = new Dictionary<string, (int Count, int JobId, string Doc, string Owner)>();
