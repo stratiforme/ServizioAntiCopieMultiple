@@ -13,6 +13,7 @@ using System.Printing;
 using Microsoft.Extensions.Configuration;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Linq;
 
 namespace ServizioAntiCopieMultiple
 {
@@ -605,15 +606,16 @@ namespace ServizioAntiCopieMultiple
                     _logger.LogDebug(ex, "Failed dumping TargetInstance properties");
                 }
 
-                string? name = target["Name"]?.ToString();
-                string document = target["Document"]?.ToString() ?? string.Empty;
-                string owner = target["Owner"]?.ToString() ?? string.Empty;
+                // Read WMI properties using shared helper to avoid ManagementException when a property is missing
+                string? name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
+                string document = WmiHelper.GetPropertyValueSafe(target, "Document")?.ToString() ?? string.Empty;
+                string owner = WmiHelper.GetPropertyValueSafe(target, "Owner")?.ToString() ?? string.Empty;
 
                 try
                 {
                     if (_logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
                     {
-                        string path = target["__PATH"]?.ToString() ?? string.Empty;
+                        string path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty;
                         _logger.LogDebug("Print job properties: Name={Name}, Document={Document}, Owner={Owner}, __PATH={Path}", name, document, owner, path);
                     }
                 }
@@ -645,12 +647,18 @@ namespace ServizioAntiCopieMultiple
                     catch (Exception ex) { _logger.LogDebug(ex, "DEVMODE detection failed for job {JobId}", jobId); }
                 }
 
-                // 2) Try PrintTicket XML
+                // 2) Try PrintTicket XML (safe access)
                 if (copies <= 1)
                 {
                     try
                     {
-                        var ptObj = target["PrintTicket"] ?? target["PrintTicketXML"] ?? target["PrintTicketData"];
+                        object? ptObj = null;
+                        foreach (var pname in new[] { "PrintTicket", "PrintTicketXML", "PrintTicketData" })
+                        {
+                            ptObj = WmiHelper.GetPropertyValueSafe(target, pname);
+                            if (ptObj != null) break;
+                        }
+
                         if (ptObj != null)
                         {
                             string ptXml = ptObj.ToString() ?? string.Empty;
@@ -708,7 +716,7 @@ namespace ServizioAntiCopieMultiple
                 // Log received event at Information level so events are visible in logs even when Copies == 1
                 try
                 {
-                    string wmiPath = target["__PATH"]?.ToString() ?? string.Empty;
+                    string wmiPath = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty;
                     _logger.LogInformation("WMIPrintEvent: JobId={JobId}, Name={Name}, Document={Document}, Owner={Owner}, Copies={Copies}, Path={Path}", jobId, name ?? "<null>", document, owner, copies, string.IsNullOrEmpty(wmiPath) ? "<empty>" : wmiPath);
                 }
                 catch (Exception ex)
@@ -733,7 +741,7 @@ namespace ServizioAntiCopieMultiple
                     Document = document ?? string.Empty,
                     Owner = owner ?? string.Empty,
                     Copies = copies,
-                    Path = target["__PATH"]?.ToString() ?? string.Empty
+                    Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty
                 };
 
                 if (info.Copies > 1)
@@ -885,15 +893,15 @@ namespace ServizioAntiCopieMultiple
                     string.Equals(eventClass, "__InstanceModificationEvent", StringComparison.OrdinalIgnoreCase))
                 {
                     // Build minimal PrintJobInfo and process similarly to creation
-                    string? name = target["Name"]?.ToString();
+                    string? name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
                     int copies = PrintJobParser.GetCopiesFromManagementObject(target);
                     var info = new PrintJobInfo
                     {
                         Name = name,
-                        Document = target["Document"]?.ToString() ?? string.Empty,
-                        Owner = target["Owner"]?.ToString() ?? string.Empty,
+                        Document = WmiHelper.GetPropertyValueSafe(target, "Document")?.ToString() ?? string.Empty,
+                        Owner = WmiHelper.GetPropertyValueSafe(target, "Owner")?.ToString() ?? string.Empty,
                         Copies = copies,
-                        Path = target["__PATH"]?.ToString() ?? string.Empty
+                        Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty
                     };
 
                     // Log operation-level event
@@ -1018,7 +1026,21 @@ namespace ServizioAntiCopieMultiple
                 // If PrintTicket present, also save separately (helps offline analysis)
                 try
                 {
-                    var ptObj = target["PrintTicket"] ?? target["PrintTicketXML"] ?? target["PrintTicketData"];
+                    object? ptObj = null;
+                    foreach (var pname in new[] { "PrintTicket", "PrintTicketXML", "PrintTicketData" })
+                    {
+                        try
+                        {
+                            var pd = target.Properties.Cast<PropertyData>().FirstOrDefault(p => string.Equals(p.Name, pname, StringComparison.OrdinalIgnoreCase));
+                            if (pd != null && pd.Value != null)
+                            {
+                                ptObj = pd.Value;
+                                break;
+                            }
+                        }
+                        catch { }
+                    }
+
                     if (ptObj != null)
                     {
                         string ptXml = ptObj.ToString() ?? string.Empty;

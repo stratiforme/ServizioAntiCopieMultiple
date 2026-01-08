@@ -1,6 +1,8 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Management;
+using System.Runtime.Versioning;
 
 namespace ServizioAntiCopieMultiple
 {
@@ -51,6 +53,7 @@ namespace ServizioAntiCopieMultiple
             return 1;
         }
 
+        [SupportedOSPlatform("windows")]
         public static int GetCopiesFromManagementObject(ManagementBaseObject? target)
         {
             if (target == null)
@@ -58,7 +61,7 @@ namespace ServizioAntiCopieMultiple
 
             try
             {
-                var copiesObj = target["Copies"];
+                var copiesObj = GetPropertyValueSafe(target, "Copies");
                 if (copiesObj != null)
                 {
                     if (copiesObj is int ci) return ci;
@@ -66,7 +69,7 @@ namespace ServizioAntiCopieMultiple
                 }
 
                 int totalPages = 0;
-                var totalObj = target["TotalPages"];
+                var totalObj = GetPropertyValueSafe(target, "TotalPages");
                 if (totalObj != null && int.TryParse(totalObj.ToString(), out var tp))
                     totalPages = tp;
 
@@ -74,7 +77,7 @@ namespace ServizioAntiCopieMultiple
                 string[] pagePropCandidates = { "Pages", "NumberOfPages", "PageCount" };
                 foreach (var prop in pagePropCandidates)
                 {
-                    var pObj = target[prop];
+                    var pObj = GetPropertyValueSafe(target, prop);
                     if (pObj != null && int.TryParse(pObj.ToString(), out var pVal) && pVal > 0)
                     {
                         pagesPerDoc = pVal;
@@ -95,7 +98,13 @@ namespace ServizioAntiCopieMultiple
 
                 try
                 {
-                    var ptObj = target["PrintTicket"] ?? target["PrintTicketXML"] ?? target["PrintTicketData"];
+                    object? ptObj = null;
+                    foreach (var pname in new[] { "PrintTicket", "PrintTicketXML", "PrintTicketData" })
+                    {
+                        ptObj = GetPropertyValueSafe(target, pname);
+                        if (ptObj != null) break;
+                    }
+
                     if (ptObj != null)
                     {
                         string ptXml = ptObj.ToString() ?? string.Empty;
@@ -115,6 +124,28 @@ namespace ServizioAntiCopieMultiple
             }
 
             return 1;
+        }
+
+        // Local fallback helper to safely read properties from ManagementBaseObject without depending on external helper class
+        [SupportedOSPlatform("windows")]
+        private static object? GetPropertyValueSafe(ManagementBaseObject? target, string propertyName)
+        {
+            if (target == null) return null;
+            try
+            {
+                foreach (PropertyData p in target.Properties)
+                {
+                    if (string.Equals(p.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return p.Value; } catch { return null; }
+                    }
+                }
+            }
+            catch
+            {
+                // swallow exceptions - caller should handle null results
+            }
+            return null;
         }
 
         private static int? ParseCopiesFromPrintTicketXml(string xml)
