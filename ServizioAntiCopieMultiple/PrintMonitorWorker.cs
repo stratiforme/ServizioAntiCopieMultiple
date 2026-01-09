@@ -844,7 +844,7 @@ namespace ServizioAntiCopieMultiple
                     {
                         try
                         {
-                            var cancelled = await _canceller.CancelAsync(path, info.Name, _logger).ConfigureAwait(false);
+                            var cancelled = await _canceller.CancelAsync(path, info.Name, info.Owner, _logger).ConfigureAwait(false);
                             if (cancelled)
                             {
                                 _logger.LogInformation("JobCancelled: Successfully cancelled print job {JobId}", jobId);
