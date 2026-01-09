@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Xml;
 
-namespace ServizioAntiCopieMultiple
+namespace ServizioAntiCopieMultiple.Helpers
 {
     internal static class PrintTicketUtils
     {

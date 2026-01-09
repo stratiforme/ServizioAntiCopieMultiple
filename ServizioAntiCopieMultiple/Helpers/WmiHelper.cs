@@ -1,9 +1,9 @@
 using System;
 using System.Management;
 
-namespace ServizioAntiCopieMultiple
+namespace ServizioAntiCopieMultiple.Helpers
 {
-    public static class WmiHelper
+    internal static class WmiHelper
     {
         public static object? GetPropertyValueSafe(ManagementBaseObject target, string propertyName)
         {
