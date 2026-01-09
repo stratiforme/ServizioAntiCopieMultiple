@@ -75,7 +75,7 @@ namespace ServizioAntiCopieMultiple
 
             try
             {
-                var copiesObj = GetPropertyValueSafe(target, "Copies");
+                var copiesObj = WmiHelper.GetPropertyValueSafe(target, "Copies");
                 if (copiesObj != null)
                 {
                     if (copiesObj is int ci) return ci;
@@ -83,7 +83,7 @@ namespace ServizioAntiCopieMultiple
                 }
 
                 int totalPages = 0;
-                var totalObj = GetPropertyValueSafe(target, "TotalPages");
+                var totalObj = WmiHelper.GetPropertyValueSafe(target, "TotalPages");
                 if (totalObj != null && int.TryParse(totalObj.ToString(), out var tp))
                     totalPages = tp;
 
@@ -91,7 +91,7 @@ namespace ServizioAntiCopieMultiple
                 string[] pagePropCandidates = { "Pages", "NumberOfPages", "PageCount" };
                 foreach (var prop in pagePropCandidates)
                 {
-                    var pObj = GetPropertyValueSafe(target, prop);
+                    var pObj = WmiHelper.GetPropertyValueSafe(target, prop);
                     if (pObj != null && int.TryParse(pObj.ToString(), out var pVal) && pVal > 0)
                     {
                         pagesPerDoc = pVal;
@@ -115,7 +115,7 @@ namespace ServizioAntiCopieMultiple
                     object? ptObj = null;
                     foreach (var pname in new[] { "PrintTicket", "PrintTicketXML", "PrintTicketData" })
                     {
-                        ptObj = GetPropertyValueSafe(target, pname);
+                        ptObj = WmiHelper.GetPropertyValueSafe(target, pname);
                         if (ptObj != null) break;
                     }
 
@@ -124,7 +124,7 @@ namespace ServizioAntiCopieMultiple
                         string ptXml = ptObj.ToString() ?? string.Empty;
                         if (!string.IsNullOrEmpty(ptXml))
                         {
-                            var ptCopies = ParseCopiesFromPrintTicketXml(ptXml);
+                            var ptCopies = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
                             if (ptCopies.HasValue && ptCopies.Value > 0) return ptCopies.Value;
                         }
                     }
@@ -136,7 +136,7 @@ namespace ServizioAntiCopieMultiple
                 // Fallback: parse copies from the Name property when present (many drivers append ", <copies>" to the name)
                 try
                 {
-                    var nameObj = GetPropertyValueSafe(target, "Name");
+                    var nameObj = WmiHelper.GetPropertyValueSafe(target, "Name");
                     if (nameObj != null)
                     {
                         var nameStr = nameObj.ToString() ?? string.Empty;
@@ -159,63 +159,6 @@ namespace ServizioAntiCopieMultiple
             }
 
             return 1;
-        }
-
-        // Local fallback helper to safely read properties from ManagementBaseObject without depending on external helper class
-        [SupportedOSPlatform("windows")]
-        private static object? GetPropertyValueSafe(ManagementBaseObject? target, string propertyName)
-        {
-            if (target == null) return null;
-            try
-            {
-                foreach (PropertyData p in target.Properties)
-                {
-                    if (string.Equals(p.Name, propertyName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        try { return p.Value; } catch { return null; }
-                    }
-                }
-            }
-            catch
-            {
-                // swallow exceptions - caller should handle null results
-            }
-            return null;
-        }
-
-        private static int? ParseCopiesFromPrintTicketXml(string xml)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(xml)) return null;
-
-                string lower = xml.ToLowerInvariant();
-                var tags = new[] { "jobcopies", "copycount", "copy-count", "copies" };
-                foreach (var tag in tags)
-                {
-                    string open = "<" + tag + ">";
-                    string close = "</" + tag + ">";
-                    int oi = lower.IndexOf(open);
-                    if (oi >= 0)
-                    {
-                        int ci = lower.IndexOf(close, oi + open.Length);
-                        if (ci > oi)
-                        {
-                            string inner = lower.Substring(oi + open.Length, ci - (oi + open.Length)).Trim();
-                            var m = System.Text.RegularExpressions.Regex.Match(inner, "\\d+");
-                            if (m.Success && int.TryParse(m.Value, out var v)) return v;
-                        }
-                    }
-                }
-
-                var ma = System.Text.RegularExpressions.Regex.Match(lower, "copy(?:count|-count)?=\"?(\\d+)\"?" );
-                if (ma.Success && int.TryParse(ma.Groups[1].Value, out var av)) return av;
-            }
-            catch
-            {
-            }
-
-            return null;
         }
     }
 }
