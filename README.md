@@ -1,6 +1,6 @@
 # ServizioAntiCopieMultiple
 
-**Servizio Windows** in C# (.NET 10.0) per monitorare i lavori di stampa e impedire la stampa di più copie dello stesso documento.
+**Servizio Windows** in C# (.NET 8.0) per monitorare i lavori di stampa e impedire la stampa di più copie dello stesso documento.
 
 ---
 
