@@ -1,11 +1,8 @@
-using System.Runtime.Versioning;
-using System;
-using System.ServiceProcess;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
+using System.Runtime.Versioning;
 using System.Security.Principal;
-using System.Threading;
+using System.ServiceProcess;
 
 [assembly: SupportedOSPlatform("windows")]
 

@@ -1,11 +1,11 @@
-csharp ServizioAntiCopieMultiple\PrintJobCanceller.cs
+ServizioAntiCopieMultiple\PrintJobCanceller.cs
 using System;
+using System.Linq;
 using System.Management;
 using System.Printing;
+using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
-using System.Text;
-using System.Linq;
 
 namespace ServizioAntiCopieMultiple
 {
@@ -58,7 +58,7 @@ namespace ServizioAntiCopieMultiple
         {
             return Task.Run(() =>
             {
-                // If we don't have any identifying info for System.Printing, skip quickly.
+                // If we don't have identifying info for System.Printing, skip quickly.
                 if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(owner))
                     return false;
 
