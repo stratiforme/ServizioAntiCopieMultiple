@@ -45,6 +45,20 @@ namespace ServizioAntiCopieMultiple
                     if (pagesObj is int ip) return ip;
                     if (int.TryParse(pagesObj.ToString(), out var parsedPages)) return parsedPages;
                 }
+
+                // Fallback: some drivers embed copies count in the job Name (e.g. "Printer name, 10")
+                if (props.TryGetValue("Name", out var nameObj) && nameObj != null)
+                {
+                    var nameStr = nameObj.ToString() ?? string.Empty;
+                    var m = System.Text.RegularExpressions.Regex.Match(nameStr, ",\\s*(\\d+)\\s*$");
+                    if (m.Success && int.TryParse(m.Groups[1].Value, out var fromName) && fromName > 0)
+                        return fromName;
+
+                    // also try any trailing number
+                    var m2 = System.Text.RegularExpressions.Regex.Match(nameStr, "(\\d+)\\s*$");
+                    if (m2.Success && int.TryParse(m2.Groups[1].Value, out var fromName2) && fromName2 > 0)
+                        return fromName2;
+                }
             }
             catch
             {
@@ -113,6 +127,27 @@ namespace ServizioAntiCopieMultiple
                             var ptCopies = ParseCopiesFromPrintTicketXml(ptXml);
                             if (ptCopies.HasValue && ptCopies.Value > 0) return ptCopies.Value;
                         }
+                    }
+                }
+                catch
+                {
+                }
+
+                // Fallback: parse copies from the Name property when present (many drivers append ", <copies>" to the name)
+                try
+                {
+                    var nameObj = GetPropertyValueSafe(target, "Name");
+                    if (nameObj != null)
+                    {
+                        var nameStr = nameObj.ToString() ?? string.Empty;
+                        var m = System.Text.RegularExpressions.Regex.Match(nameStr, ",\\s*(\\d+)\\s*$");
+                        if (m.Success && int.TryParse(m.Groups[1].Value, out var nameCopies) && nameCopies > 0)
+                            return nameCopies;
+
+                        // also allow any trailing number
+                        var m2 = System.Text.RegularExpressions.Regex.Match(nameStr, "(\\d+)\\s*$");
+                        if (m2.Success && int.TryParse(m2.Groups[1].Value, out var nameCopies2) && nameCopies2 > 0)
+                            return nameCopies2;
                     }
                 }
                 catch
