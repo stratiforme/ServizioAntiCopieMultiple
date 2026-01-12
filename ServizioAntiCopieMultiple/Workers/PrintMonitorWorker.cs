@@ -376,13 +376,15 @@ namespace ServizioAntiCopieMultiple
                     return;
                 }
 
+                // Simulator handler: set HostPrintQueue if provided in JSON
                 var jobInfo = new PrintJobInfo
                 {
                     Name = info.TryGetValue("Name", out var n) ? n?.ToString() : null,
                     Document = info.TryGetValue("Document", out var d) ? d?.ToString() ?? string.Empty : string.Empty,
                     Owner = info.TryGetValue("Owner", out var o) ? o?.ToString() ?? string.Empty : string.Empty,
                     Copies = info.TryGetValue("Copies", out var c) && int.TryParse(c?.ToString(), out var ci) ? ci : 1,
-                    Path = info.TryGetValue("Path", out var p) ? p?.ToString() ?? string.Empty : string.Empty
+                    Path = info.TryGetValue("Path", out var p) ? p?.ToString() ?? string.Empty : string.Empty,
+                    HostPrintQueue = info.TryGetValue("HostPrintQueue", out var h) ? h?.ToString() ?? string.Empty : string.Empty
                 };
 
                 _logger.LogInformation("Simulator: invoking simulated print job: Name={Name}, Document={Document}, Owner={Owner}, Copies={Copies}", jobInfo.Name, jobInfo.Document, jobInfo.Owner, jobInfo.Copies);
@@ -406,6 +408,7 @@ namespace ServizioAntiCopieMultiple
             public string Owner { get; init; } = string.Empty;
             public int Copies { get; init; } = 1;
             public string Path { get; init; } = string.Empty;
+            public string HostPrintQueue { get; init; } = string.Empty;
         }
 
         private async Task EnsureWmiWatcherAsync(CancellationToken token)
@@ -637,6 +640,18 @@ namespace ServizioAntiCopieMultiple
                         if (!string.IsNullOrEmpty(nativeDebug) && _logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
                         {
                             _logger.LogDebug("NativeSpool debug: {Debug}", nativeDebug);
+
+                            try
+                            {
+                                // Save native spool debug to diagnostics for offline analysis
+                                string nsFile = Path.Combine(_diagnosticsDir, $"nativespool_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.log");
+                                File.WriteAllText(nsFile, nativeDebug);
+                                _logger.LogInformation("DiagnosticsDumpSaved: NativeSpool debug saved to {Path}", nsFile);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogDebug(ex, "Failed saving NativeSpool debug to diagnostics");
+                            }
                         }
 
                         if (native.HasValue && native.Value > copies)
@@ -742,7 +757,8 @@ namespace ServizioAntiCopieMultiple
                     Document = document ?? string.Empty,
                     Owner = owner ?? string.Empty,
                     Copies = copies,
-                    Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty
+                    Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty,
+                    HostPrintQueue = WmiHelper.GetPropertyValueSafe(target, "HostPrintQueue")?.ToString() ?? string.Empty
                 };
 
                 if (info.Copies > 1)
@@ -845,7 +861,7 @@ namespace ServizioAntiCopieMultiple
                     {
                         try
                         {
-                            var cancelled = await _canceller.CancelAsync(path, info.Name, info.Owner, _logger).ConfigureAwait(false);
+                            var cancelled = await _canceller.CancelAsync(path, info.Name, info.Owner, info.HostPrintQueue, _logger).ConfigureAwait(false);
                             if (cancelled)
                             {
                                 _logger.LogInformation("JobCancelled: Successfully cancelled print job {JobId}", jobId);
@@ -873,7 +889,7 @@ namespace ServizioAntiCopieMultiple
                     {
                         try
                         {
-                            var cancelled = await _canceller.CancelAsync(string.Empty, info.Name, info.Owner, _logger).ConfigureAwait(false);
+                            var cancelled = await _canceller.CancelAsync(string.Empty, info.Name, info.Owner, info.HostPrintQueue, _logger).ConfigureAwait(false);
                             if (cancelled)
                             {
                                 _logger.LogInformation("FallbackCancelSuccess: Successfully cancelled job {JobId} via System.Printing", jobId);
