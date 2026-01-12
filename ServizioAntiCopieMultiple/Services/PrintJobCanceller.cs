@@ -57,6 +57,8 @@ namespace ServizioAntiCopieMultiple
                         }
                         catch { /* ignore parse errors and continue to heuristics below */ }
 
+                        logger.LogDebug("PrintJobCanceller: Parsed printerName='{Printer}', jobId={JobId} from name '{Name}'", printerName, parsedJobId, name);
+
                         // If job id still unknown, attempt to use PrintJobParser.ParseJobId (if present)
                         if (parsedJobId == null)
                         {
@@ -77,17 +79,20 @@ namespace ServizioAntiCopieMultiple
                             {
                                 try
                                 {
+                                    logger.LogDebug("PrintJobCanceller: Attempting to access queue {Printer}", printerName);
                                     using var queue = server.GetPrintQueue(printerName);
                                     queue.Refresh();
                                     var jobs = queue.GetPrintJobInfoCollection();
+                                    
                                     foreach (PrintSystemJobInfo job in jobs)
                                     {
+                                        logger.LogDebug("PrintJobCanceller: Checking job {JobId} on queue {Printer}", job.JobIdentifier, printerName);
                                         if (parsedJobId.HasValue && job.JobIdentifier == parsedJobId.Value)
                                         {
                                             try
                                             {
                                                 job.Cancel();
-                                                logger.LogDebug("PrintJobCanceller: Cancelled job {JobId} on printer {Printer}", parsedJobId.Value, printerName);
+                                                logger.LogInformation("PrintJobCanceller: Successfully cancelled job {JobId} on printer {Printer}", parsedJobId.Value, printerName);
                                                 return true;
                                             }
                                             catch (Exception jex)
@@ -106,6 +111,7 @@ namespace ServizioAntiCopieMultiple
                             // As last resort, scan all queues for the job id
                             if (parsedJobId.HasValue)
                             {
+                                logger.LogDebug("PrintJobCanceller: Scanning all print queues for job {JobId}", parsedJobId.Value);
                                 foreach (var pq in server.GetPrintQueues(new[] { EnumeratedPrintQueueTypes.Local, EnumeratedPrintQueueTypes.Connections, EnumeratedPrintQueueTypes.Shared }))
                                 {
                                     try
@@ -120,7 +126,7 @@ namespace ServizioAntiCopieMultiple
                                                 try
                                                 {
                                                     job.Cancel();
-                                                    logger.LogDebug("PrintJobCanceller: Cancelled job {JobId} on queue {Queue}", parsedJobId.Value, q.Name);
+                                                    logger.LogInformation("PrintJobCanceller: Successfully cancelled job {JobId} on queue {Queue}", parsedJobId.Value, q.Name);
                                                     return true;
                                                 }
                                                 catch (Exception jex)
