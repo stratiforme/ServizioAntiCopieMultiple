@@ -866,6 +866,28 @@ namespace ServizioAntiCopieMultiple
                 else
                 {
                     _logger.LogWarning("JobCancelled: Could not determine WMI path for job {JobId}; cancellation not attempted. Name={Name}", jobId, info.Name);
+                    
+                    // Try fallback System.Printing cancellation immediately when WMI path is not available
+                    _logger.LogInformation("FallbackCancel: Attempting System.Printing-based cancellation for job {JobId}", jobId);
+                    _ = _processor.EnqueueAsync(async () =>
+                    {
+                        try
+                        {
+                            var cancelled = await _canceller.CancelAsync(string.Empty, info.Name, info.Owner, _logger).ConfigureAwait(false);
+                            if (cancelled)
+                            {
+                                _logger.LogInformation("FallbackCancelSuccess: Successfully cancelled job {JobId} via System.Printing", jobId);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("FallbackCancelFailed: System.Printing cancellation failed for job {JobId}. User intervention may be required.", jobId);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "FallbackCancelError: Error during System.Printing cancellation for job {JobId}", jobId);
+                        }
+                    });
                 }
             }
             catch (Exception ex)
