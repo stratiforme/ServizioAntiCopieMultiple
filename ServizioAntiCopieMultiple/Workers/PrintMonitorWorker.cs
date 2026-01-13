@@ -38,6 +38,8 @@ namespace ServizioAntiCopieMultiple
         private readonly int _scanIntervalSeconds;
         private readonly int _jobAgeThresholdSeconds; // ignore jobs older than this when scanning
         private readonly bool _enableScanner;
+        private readonly bool _saveNetworkDumps;
+        private readonly bool _enableNetworkCancellation;
 
         public PrintMonitorWorker(ILogger<PrintMonitorWorker> logger, IConfiguration config)
         {
@@ -72,6 +74,18 @@ namespace ServizioAntiCopieMultiple
                 var envEnable = Environment.GetEnvironmentVariable("SACM_ENABLE_SCANNER_IN_SERVICE");
                 if (bool.TryParse(envEnable, out var envBool)) cfgEnable = envBool;
                 _enableScanner = cfgEnable;
+
+                // Network-related options: whether to save diagnostics for network printers
+                // and whether automatic cancellation for network printers is allowed.
+                bool saveNet = config.GetValue<bool?>("PrintMonitor:SaveNetworkDumps") ?? true; // default: save network dumps
+                var envSaveNet = Environment.GetEnvironmentVariable("SACM_SAVE_NETWORK_DUMPS");
+                if (bool.TryParse(envSaveNet, out var envSaveBool)) saveNet = envSaveBool;
+                _saveNetworkDumps = saveNet;
+
+                bool allowNetCancel = config.GetValue<bool?>("PrintMonitor:EnableNetworkCancellation") ?? false; // default: do not cancel network jobs
+                var envNetCancel = Environment.GetEnvironmentVariable("SACM_ENABLE_NETWORK_CANCEL");
+                if (bool.TryParse(envNetCancel, out var envNetCancelBool)) allowNetCancel = envNetCancelBool;
+                _enableNetworkCancellation = allowNetCancel;
             }
             catch (Exception ex)
             {
@@ -80,9 +94,12 @@ namespace ServizioAntiCopieMultiple
                 _jobAgeThresholdSeconds = 30;
                 _signatureWindow = TimeSpan.FromSeconds(10);
                 _enableScanner = false;
+                _saveNetworkDumps = true;
+                _enableNetworkCancellation = false;
             }
 
             _logger.LogInformation("PrintMonitor configuration: ScanIntervalSeconds={ScanInterval}, JobAgeThresholdSeconds={JobAge}, SignatureWindowSeconds={SigWindow}", _scanIntervalSeconds, _jobAgeThresholdSeconds, _signatureWindow.TotalSeconds);
+            _logger.LogInformation("Network options: SaveNetworkDumps={SaveNet}, EnableNetworkCancellation={NetCancel}", _saveNetworkDumps, _enableNetworkCancellation);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -816,6 +833,20 @@ namespace ServizioAntiCopieMultiple
             }
         }
 
+        private static bool IsNetworkPrinter(string? name, string? hostPrintQueue)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(hostPrintQueue) && hostPrintQueue.StartsWith("\\\\")) return true;
+                if (!string.IsNullOrEmpty(name) && name.StartsWith("\\\\")) return true;
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+ 
         private void ProcessPrintJobInfo(PrintJobInfo info)
         {
             string jobId = PrintJobParser.ParseJobId(info.Name);
@@ -854,6 +885,13 @@ namespace ServizioAntiCopieMultiple
                 // DIAGNOSTICA MIGLIORATA: loggare Name e Path a Info (non solo Debug)
                 _logger.LogInformation("AttemptingCancel: JobId={JobId}, Name={Name}, Path={Path}", jobId, info.Name ?? "<null>", string.IsNullOrEmpty(path) ? "<empty>" : path);
 
+                bool isNetwork = IsNetworkPrinter(info.Name, info.HostPrintQueue);
+                if (isNetwork && !_enableNetworkCancellation)
+                {
+                    _logger.LogInformation("NetworkCancellationDisabled: automatic cancellation for network printer job {JobId} is disabled by configuration. Name={Name}", jobId, info.Name);
+                    return;
+                }
+
                 if (!string.IsNullOrEmpty(path))
                 {
                     // Schedule cancellation on processor to avoid spinning up many Task.Run
@@ -889,6 +927,12 @@ namespace ServizioAntiCopieMultiple
                     {
                         try
                         {
+                            if (isNetwork && !_enableNetworkCancellation)
+                            {
+                                _logger.LogInformation("NetworkCancellationDisabled: skipping System.Printing fallback cancellation for network job {JobId}", jobId);
+                                return;
+                            }
+
                             var cancelled = await _canceller.CancelAsync(string.Empty, info.Name, info.Owner, info.HostPrintQueue, _logger).ConfigureAwait(false);
                             if (cancelled)
                             {
@@ -1043,6 +1087,45 @@ namespace ServizioAntiCopieMultiple
         {
             try
             {
+                // If configured to skip network dumps, detect network printer and bail out early
+                try
+                {
+                    if (!_saveNetworkDumps)
+                    {
+                        var nm = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
+                        var hp = WmiHelper.GetPropertyValueSafe(target, "HostPrintQueue")?.ToString();
+                        if (IsNetworkPrinter(nm, hp))
+                        {
+                            _logger.LogDebug("SaveTargetDumpToFile: skipping diagnostics dump for network printer job {JobId} as configured", jobId);
+                            return;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "SaveTargetDumpToFile: error while checking network printer skip flag");
+                }
+
+                // Throttle dumps per jobId to avoid many identical files from rapid WMI events
+                string key = string.IsNullOrEmpty(jobId) ? "unknown" : jobId;
+                var seq = _sequenceTrackers.GetOrAdd(key, _ => new JobSequence());
+                long nowTicks = DateTime.UtcNow.Ticks;
+                long minIntervalTicks = TimeSpan.FromMilliseconds(500).Ticks; // 500 ms window
+
+                lock (seq.Lock)
+                {
+                    if (seq.LastTicks != 0 && (nowTicks - seq.LastTicks) < minIntervalTicks)
+                    {
+                        seq.Count++;
+                        _logger.LogDebug("SaveTargetDumpToFile: skipped duplicate dump for JobId={JobId} (recentCount={Count})", jobId, seq.Count);
+                        return;
+                    }
+
+                    seq.LastTicks = nowTicks;
+                    seq.Count = 0;
+                    seq.LastId++;
+                }
+
                 var props = new Dictionary<string, object?>();
                 foreach (PropertyData p in target.Properties)
                 {
@@ -1056,7 +1139,8 @@ namespace ServizioAntiCopieMultiple
                     }
                 }
 
-                string fileName = $"wmi_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId ?? "unknown"}.json";
+                // Include a short GUID to ensure uniqueness when files are written close in time
+                string fileName = $"wmi_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId ?? "unknown"}_{Guid.NewGuid():N}.json";
                 string path = Path.Combine(_diagnosticsDir, fileName);
                 var opts = new JsonSerializerOptions { WriteIndented = true };
                 File.WriteAllText(path, JsonSerializer.Serialize(props, opts));
@@ -1085,7 +1169,7 @@ namespace ServizioAntiCopieMultiple
                         string ptXml = ptObj.ToString() ?? string.Empty;
                         if (!string.IsNullOrEmpty(ptXml))
                         {
-                            string ptFile = Path.Combine(_diagnosticsDir, $"printticket_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.xml");
+                            string ptFile = Path.Combine(_diagnosticsDir, $"printticket_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId ?? "unknown"}_{Guid.NewGuid():N}.xml");
                             File.WriteAllText(ptFile, ptXml);
                             _logger.LogInformation("DiagnosticsDumpSaved: PrintTicket XML saved to {Path}", ptFile);
                         }

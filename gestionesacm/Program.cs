@@ -50,21 +50,16 @@ void EnsureElevated()
 {
     if (!IsAdministrator())
     {
-        Console.WriteLine("Questo tool richiede privilegi amministrativi per gestire il servizio.");
-        Console.Write("Tentare l'elevazione ad amministratore adesso? (S/n): ");
-        var ans = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(ans) || ans.Trim().Equals("s", StringComparison.OrdinalIgnoreCase))
+        // Attempt to relaunch elevated automatically. Note: this will trigger the UAC prompt; cannot be bypassed programmatically.
+        if (TryRestartAsAdmin())
         {
-            if (TryRestartAsAdmin())
-            {
-                // Exit current process to allow elevated instance to run
-                Environment.Exit(0);
-            }
-            else
-            {
-                Console.WriteLine("Impossibile ottenere i privilegi elevati. Alcune operazioni potrebbero fallire.");
-                Thread.Sleep(1500);
-            }
+            // Exit current non-elevated instance to allow elevated one to run
+            Environment.Exit(0);
+        }
+        else
+        {
+            Console.WriteLine("Impossibile ottenere i privilegi elevati automaticamente. Avvia il tool come amministratore.");
+            Thread.Sleep(1500);
         }
     }
 }
@@ -103,6 +98,7 @@ void ShowMenu()
         Console.WriteLine("2) Avvia servizio come servizio di Windows");
         Console.WriteLine("3) Ferma servizio");
         Console.WriteLine("4) Esegui servizio in modalità console (--console) (utile per debug/diagnostica)");
+        Console.WriteLine("5) Configura impostazioni stampa manualmente");
         Console.WriteLine("0) Esci");
     }
 }
@@ -189,6 +185,15 @@ bool TryInstallService(out string message)
             catch (Exception ex)
             {
                 message += "\nWarning: impossibile creare la sorgente EventLog: " + ex.Message;
+            }
+
+            // After successful install, offer to configure settings now and save to ProgramData
+            Console.WriteLine("Installazione riuscita. Vuoi configurare le impostazioni ora? (S/n): ");
+            var ans = Console.ReadLine();
+            if (string.IsNullOrWhiteSpace(ans) || ans.Trim().Equals("s", StringComparison.OrdinalIgnoreCase))
+            {
+                var cfg = PromptPrintMonitorSettings();
+                SaveConfigToCommonAppData(cfg);
             }
         }
 
@@ -348,6 +353,71 @@ bool TryRunServiceConsole(out string message)
     }
 }
 
+string GetSharedConfigPath()
+{
+    var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple");
+    Directory.CreateDirectory(dir);
+    return Path.Combine(dir, "config.json");
+}
+
+void SaveConfigToCommonAppData(Dictionary<string, object> printMonitorSettings)
+{
+    try
+    {
+        var root = new Dictionary<string, object>
+        {
+            ["PrintMonitor"] = printMonitorSettings
+        };
+
+        string path = GetSharedConfigPath();
+        var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(root, opts));
+        Console.WriteLine($"Configurazione salvata in: {path}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine("Errore salvando la configurazione: " + ex.Message);
+    }
+}
+
+Dictionary<string, object> PromptPrintMonitorSettings()
+{
+    var settings = new Dictionary<string, object>();
+
+    bool ReadBool(string prompt, bool defaultVal)
+    {
+        Console.Write(prompt + $" ({(defaultVal ? "S" : "N")}/n): ");
+        var a = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(a)) return defaultVal;
+        return a.Trim().Equals("s", StringComparison.OrdinalIgnoreCase) || a.Trim().Equals("y", StringComparison.OrdinalIgnoreCase);
+    }
+
+    int ReadInt(string prompt, int defaultVal)
+    {
+        Console.Write(prompt + $" (default {defaultVal}): ");
+        var t = Console.ReadLine();
+        if (int.TryParse(t, out var v)) return v;
+        return defaultVal;
+    }
+
+    Console.WriteLine("Configurazione PrintMonitor (premi invio per usare il valore predefinito)");
+    bool enableScanner = ReadBool("Abilitare lo scanner in servizio?", false);
+    bool saveNetworkDumps = ReadBool("Salvare dump diagnostici per stampanti di rete?", true);
+    bool enableNetworkCancel = ReadBool("Consentire cancellazione automatica per stampanti di rete?", false);
+    int scanInterval = ReadInt("Intervallo scanner (secondi)", 5);
+    int jobAge = ReadInt("Soglia età job (secondi)", 30);
+    int sigWindow = ReadInt("Finestra signature (secondi)", 10);
+
+    settings["EnableScannerInService"] = enableScanner;
+    settings["SaveNetworkDumps"] = saveNetworkDumps;
+    settings["EnableNetworkCancellation"] = enableNetworkCancel;
+    settings["ScanIntervalSeconds"] = scanInterval;
+    settings["JobAgeThresholdSeconds"] = jobAge;
+    settings["SignatureWindowSeconds"] = sigWindow;
+
+    return settings;
+}
+
 // Ensure elevated privileges at startup when possible
 EnsureElevated();
 
@@ -374,6 +444,14 @@ while (true)
             ok = TryUninstallService(out resultMsg);
             Console.WriteLine(ok ? "Disinstallazione riuscita." : "Disinstallazione fallita: " + resultMsg);
         }
+    }
+    else if (ch == "5")
+    {
+        // Manual configuration helper
+        var cfg = PromptPrintMonitorSettings();
+        SaveConfigToCommonAppData(cfg);
+        Console.WriteLine("Configurazione aggiornata.");
+        ok = true;
     }
     else if (ch == "2")
     {

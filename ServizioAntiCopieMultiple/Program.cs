@@ -88,6 +88,16 @@ try
         {
             // allow appsettings.json to configure PrintMonitor
             cfg.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
+            // Also allow a global config placed in ProgramData by the installer / gestionesacm UI
+            try
+            {
+                var commonPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "config.json");
+                cfg.AddJsonFile(commonPath, optional: true, reloadOnChange: true);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not add common ProgramData config.json to configuration sources");
+            }
         })
         .ConfigureLogging((context, logging) =>
         {
