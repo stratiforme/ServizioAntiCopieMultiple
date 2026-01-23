@@ -11,7 +11,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Printing;
 using Microsoft.Extensions.Configuration;
-using System.Runtime.InteropServices;
+using System.Runtime.Interop Services;
 using System.Text;
 using System.Linq;
 using ServizioAntiCopieMultiple.Helpers;
@@ -47,6 +47,14 @@ namespace ServizioAntiCopieMultiple
             _responsesDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "responses");
             _simulatorDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "simulator");
             _diagnosticsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple", "diagnostics");
+
+            // Set service UI language from shared config if present so logs/messages can be localized
+            try
+            {
+                var lang = config.GetValue<string>("Language");
+                if (!string.IsNullOrEmpty(lang)) ServizioAntiCopieMultiple.Helpers.Localizer.Language = lang;
+            }
+            catch { }
 
             // Read configuration: prefer appsettings section PrintMonitor, then environment variables, then defaults
             try
@@ -99,7 +107,8 @@ namespace ServizioAntiCopieMultiple
             }
 
             _logger.LogInformation("PrintMonitor configuration: ScanIntervalSeconds={ScanInterval}, JobAgeThresholdSeconds={JobAge}, SignatureWindowSeconds={SigWindow}", _scanIntervalSeconds, _jobAgeThresholdSeconds, _signatureWindow.TotalSeconds);
-            _logger.LogInformation("Network options: SaveNetworkDumps={SaveNet}, EnableNetworkCancellation={NetCancel}", _saveNetworkDumps, _enableNetworkCancellation);
+            _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintMonitorConfiguration"), _scanIntervalSeconds, _jobAgeThresholdSeconds, _signatureWindow.TotalSeconds);
+            _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("NetworkOptions"), _saveNetworkDumps, _enableNetworkCancellation);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -108,17 +117,20 @@ namespace ServizioAntiCopieMultiple
             {
                 _logger.LogInformation("PrintMonitorWorker starting. ProcessId={Pid}, User={User}", Environment.ProcessId, Environment.UserName);
 
+                // localized start log
+                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintMonitorWorkerStarting"), Environment.ProcessId, Environment.UserName);
+                
                 // Ensure responses directory exists for user click simulation
                 Directory.CreateDirectory(_responsesDir);
-                _logger.LogInformation("Responses directory ensured at {dir}", _responsesDir);
+                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("ResponsesDirEnsured"), _responsesDir);
 
                 // Ensure simulator directory exists for local testing (drop JSON files to simulate print jobs)
                 Directory.CreateDirectory(_simulatorDir);
-                _logger.LogInformation("Simulator directory ensured at {dir}", _simulatorDir);
+                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("SimulatorDirEnsured"), _simulatorDir);
 
                 // Ensure diagnostics directory exists for property dumps
                 Directory.CreateDirectory(_diagnosticsDir);
-                _logger.LogInformation("Diagnostics directory ensured at {dir}", _diagnosticsDir);
+                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("DiagnosticsDirEnsured"), _diagnosticsDir);
 
                 // FileSystemWatcher to detect simulator JSON files
                 _simulatorWatcher = new FileSystemWatcher(_simulatorDir, "*.json")
@@ -127,7 +139,7 @@ namespace ServizioAntiCopieMultiple
                 };
                 _simulatorWatcher.Created += OnSimulatorFileCreated;
                 _simulatorWatcher.EnableRaisingEvents = true;
-                _logger.LogInformation("Simulator FileSystemWatcher started watching {dir}", _simulatorDir);
+                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("SimulatorWatcherStarted"), _simulatorDir);
 
                 // FileSystemWatcher to detect user OK responses (external UI/tool can drop files named <jobId>.ok)
                 _responseWatcher = new FileSystemWatcher(_responsesDir, "*.ok")
@@ -136,7 +148,7 @@ namespace ServizioAntiCopieMultiple
                 };
                 _responseWatcher.Created += OnResponseFileCreated;
                 _responseWatcher.EnableRaisingEvents = true;
-                _logger.LogInformation("Response FileSystemWatcher started watching {dir}", _responsesDir);
+                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("ResponseWatcherStarted"), _responsesDir);
 
                 // Start WMI connect in background to avoid blocking
                 _ = Task.Run(async () => await EnsureWmiWatcherAsync(stoppingToken).ConfigureAwait(false));
@@ -145,14 +157,14 @@ namespace ServizioAntiCopieMultiple
                 if (Environment.UserInteractive || _enableScanner)
                 {
                     _ = Task.Run(async () => await QueueScannerLoop(stoppingToken).ConfigureAwait(false));
-                    _logger.LogInformation("Queue scanner started (interactive={Interactive}, enabledByConfig={Cfg})", Environment.UserInteractive, _enableScanner);
+                    _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("QueueScannerStarted"), Environment.UserInteractive, _enableScanner);
                 }
                 else
                 {
-                    _logger.LogInformation("Queue scanner not started because running as service and not enabled by configuration. Set PrintMonitor:EnableScannerInService or SACM_ENABLE_SCANNER_IN_SERVICE=true to override.");
+                    _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("QueueScannerNotStarted"));
                 }
 
-                _logger.LogInformation("PrintMonitorWorker started and monitoring print jobs. Responses dir: {dir}", _responsesDir);
+                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintMonitorStarted"), _responsesDir);
 
                 while (!stoppingToken.IsCancellationRequested)
                 {
@@ -188,7 +200,7 @@ namespace ServizioAntiCopieMultiple
                     catch (OperationCanceledException) { break; }
                     catch (Exception ex)
                     {
-                        _logger.LogDebug(ex, "Queue scanner encountered an error");
+                        _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("QueueScannerError"), ex.Message);
                     }
 
                     try { await Task.Delay(TimeSpan.FromSeconds(_scanIntervalSeconds), ct).ConfigureAwait(false); } catch { break; }
@@ -196,7 +208,7 @@ namespace ServizioAntiCopieMultiple
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "QueueScannerLoop terminated unexpectedly");
+                _logger.LogError(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("QueueScannerLoopTerminated"));
             }
         }
 
@@ -225,7 +237,7 @@ namespace ServizioAntiCopieMultiple
                             
                             queue.Refresh();
 
-                            var groups = new Dictionary<string, (int Count, int JobId, string Doc, string Owner)>();
+                            var groups = new Dictionary<string, (int Count, int JobId, string Doc, string Owner)>()));
 
                             var jobs = queue.GetPrintJobInfoCollection();
                             foreach (PrintSystemJobInfo job in jobs)
@@ -296,7 +308,7 @@ namespace ServizioAntiCopieMultiple
                                 }
                                 catch (Exception jex)
                                 {
-                                    _logger.LogDebug(jex, "Error iterating print jobs on queue {Queue}", queueInfo.Name);
+                                    _logger.LogDebug(jex, ServizioAntiCopieMultiple.Helpers.Localizer.T("ErrorIteratingPrintJobsOnQueue"), queueInfo.Name);
                                 }
                             }
 
@@ -331,13 +343,13 @@ namespace ServizioAntiCopieMultiple
                         }
                         catch (Exception qex)
                         {
-                            _logger.LogDebug(qex, "Error scanning queue {Queue}", queueInfo.Name);
+                            _logger.LogDebug(qex, ServizioAntiCopieMultiple.Helpers.Localizer.T("ErrorScanningQueue"), queueInfo.Name);
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogDebug(ex, "ScanPrintQueuesAsync failed");
+                    _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("ScanPrintQueuesFailed"));
                 }
             });
         }
@@ -349,13 +361,13 @@ namespace ServizioAntiCopieMultiple
             {
                 string responseFile = Path.Combine(_responsesDir, jobId + ".ok");
                 File.WriteAllText(responseFile, string.Empty);
-                _logger.LogInformation("SimulateUserOk: created {File}", responseFile);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "SimulateUserOk: failed to create OK file for {JobId}", jobId);
-            }
-        }
+                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("SimulateUserOkCreated"), responseFile);
+             }
+             catch (Exception ex)
+             {
+                _logger.LogError(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("SimulateUserOkFailed"), jobId);
+             }
+         }
 
         // Simulator file format (JSON) example:
         // { "Name": "Printer, 123", "Document": "Doc.pdf", "Owner": "user", "Copies": 5, "Path": "\\\\\\?" }
@@ -389,7 +401,7 @@ namespace ServizioAntiCopieMultiple
                 var info = JsonSerializer.Deserialize<Dictionary<string, object?>>(content);
                 if (info == null)
                 {
-                    _logger.LogWarning("Simulator: could not parse JSON from {File}", e.FullPath);
+                    _logger.LogWarning(ServizioAntiCopieMultiple.Helpers.Localizer.T("SimulatorParseJsonFailed"), e.FullPath);
                     return;
                 }
 
@@ -409,7 +421,7 @@ namespace ServizioAntiCopieMultiple
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Simulator: error processing simulator file {File}", e.FullPath);
+                _logger.LogError(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("SimulatorErrorProcessing"), e.FullPath);
             }
             finally
             {
@@ -474,9 +486,9 @@ namespace ServizioAntiCopieMultiple
                     {
                         _printJobWatcher.Start();
                         _printJobOpWatcher?.Start();
-                        _logger.LogInformation("ManagementEventWatcher started with query: {Query}", query);
+                        _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("ManagementEventWatcherStartedWithQuery"), query);
                         if (_printJobOpWatcher != null)
-                            _logger.LogInformation("ManagementEventWatcher (operation) started with query: SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
+                            _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("ManagementEventWatcherOperationStartedWithQuery"), "SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
                     }
                     catch (Exception startEx)
                     {
@@ -504,9 +516,9 @@ namespace ServizioAntiCopieMultiple
 
                             _printJobWatcher.Start();
                             _printJobOpWatcher?.Start();
-                            _logger.LogInformation("ManagementEventWatcher started (fallback) with query: {Query}", query);
+                            _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("ManagementEventWatcherStartedFallback"), query);
                             if (_printJobOpWatcher != null)
-                                _logger.LogInformation("ManagementEventWatcher (operation fallback) started with query: SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
+                                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("ManagementEventWatcherOperationStartedFallback"), "SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
                         }
                         catch (Exception fbEx)
                         {
@@ -540,9 +552,9 @@ namespace ServizioAntiCopieMultiple
 
                         _printJobWatcher.Start();
                         _printJobOpWatcher?.Start();
-                        _logger.LogInformation("ManagementEventWatcher started (unscoped fallback) with query: {Query}", query);
+                        _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("ManagementEventWatcherStartedFallback"), query);
                         if (_printJobOpWatcher != null)
-                            _logger.LogInformation("ManagementEventWatcher (operation unscoped fallback) started with query: SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
+                            _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("ManagementEventWatcherOperationStartedFallback"), "SELECT * FROM __InstanceOperationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_PrintJob'");
                     }
                     catch (Exception fbEx)
                     {
@@ -573,7 +585,7 @@ namespace ServizioAntiCopieMultiple
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error handling response file {FileName}", e.FullPath);
+                _logger.LogError(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("ErrorHandlingResponseFile"), e.FullPath);
             }
         }
 
@@ -603,17 +615,17 @@ namespace ServizioAntiCopieMultiple
                 {
                     var ev = e.NewEvent;
                     if (_logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
-                        _logger.LogDebug("WMI EventArrived invoked. EventClass: {EventClass}, TimeGenerated: {Time}", ev?.ClassPath?.ClassName, ev?["TIME_CREATED"]);
+                        _logger.LogDebug(ServizioAntiCopieMultiple.Helpers.Localizer.T("WMIEventArrived"), ev?.ClassPath?.ClassName, ev?["TIME_CREATED"]);
                 }
                 catch (Exception diagEx)
                 {
-                    _logger.LogDebug(diagEx, "Failed to read basic event metadata");
+                    _logger.LogDebug(diagEx, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedReadEventMetadata"));
                 }
 
                 var target = (ManagementBaseObject?)e.NewEvent?["TargetInstance"];
                 if (target == null)
                 {
-                    _logger.LogWarning("Print job event arrived but TargetInstance was null");
+                    _logger.LogWarning(ServizioAntiCopieMultiple.Helpers.Localizer.T("TargetInstanceNull"));
                     return;
                 }
 
@@ -624,7 +636,7 @@ namespace ServizioAntiCopieMultiple
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogDebug(ex, "Failed dumping TargetInstance properties");
+                    _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedDumpTargetProperties"));
                 }
 
                 // Read WMI properties using shared helper to avoid ManagementException when a property is missing
@@ -637,12 +649,12 @@ namespace ServizioAntiCopieMultiple
                     if (_logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
                     {
                         string path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty;
-                        _logger.LogDebug("Print job properties: Name={Name}, Document={Document}, Owner={Owner}, __PATH={Path}", name, document, owner, path);
+                        _logger.LogDebug(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintJobProperties"), name, document, owner, path);
                     }
                 }
                 catch (Exception dbgEx)
                 {
-                    _logger.LogDebug(dbgEx, "Error reading target debug properties");
+                    _logger.LogDebug(dbgEx, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedReadEventMetadata"));
                 }
 
                 string jobId = PrintJobParser.ParseJobId(name);
@@ -656,18 +668,18 @@ namespace ServizioAntiCopieMultiple
                         var native = NativeSpool.TryGetCopiesFromW32Job(name, out var nativeDebug);
                         if (!string.IsNullOrEmpty(nativeDebug) && _logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
                         {
-                            _logger.LogDebug("NativeSpool debug: {Debug}", nativeDebug);
+                            _logger.LogDebug(ServizioAntiCopieMultiple.Helpers.Localizer.T("NativeSpoolDebug"), nativeDebug);
 
                             try
                             {
                                 // Save native spool debug to diagnostics for offline analysis
                                 string nsFile = Path.Combine(_diagnosticsDir, $"nativespool_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.log");
                                 File.WriteAllText(nsFile, nativeDebug);
-                                _logger.LogInformation("DiagnosticsDumpSaved: NativeSpool debug saved to {Path}", nsFile);
+                                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("NativeSpoolSaved"), nsFile);
                             }
                             catch (Exception ex)
                             {
-                                _logger.LogDebug(ex, "Failed saving NativeSpool debug to diagnostics");
+                                _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedSaveNativeSpool"));
                             }
                         }
 
@@ -703,7 +715,7 @@ namespace ServizioAntiCopieMultiple
                                 {
                                     string ptFile = Path.Combine(_diagnosticsDir, $"printticket_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.xml");
                                     File.WriteAllText(ptFile, ptXml);
-                                    _logger.LogInformation("DiagnosticsDumpSaved: PrintTicket XML saved to {Path}", ptFile);
+                                    _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintTicketSaved"), ptFile);
 
                                     var parsed = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
                                     if (parsed.HasValue)
@@ -764,7 +776,7 @@ namespace ServizioAntiCopieMultiple
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogDebug(ex, "Failed to save TargetInstance dump to diagnostics");
+                    _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedSaveTargetDump"));
                 }
 
                 // Build PrintJobInfo and hand off to common processor
@@ -1144,7 +1156,7 @@ namespace ServizioAntiCopieMultiple
                 string path = Path.Combine(_diagnosticsDir, fileName);
                 var opts = new JsonSerializerOptions { WriteIndented = true };
                 File.WriteAllText(path, JsonSerializer.Serialize(props, opts));
-                _logger.LogInformation("DiagnosticsDumpSaved: WMI TargetInstance properties saved to {Path}", path);
+                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("DiagnosticsDumpSaved"), path);
 
                 // If PrintTicket present, also save separately (helps offline analysis)
                 try
@@ -1171,7 +1183,7 @@ namespace ServizioAntiCopieMultiple
                         {
                             string ptFile = Path.Combine(_diagnosticsDir, $"printticket_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId ?? "unknown"}_{Guid.NewGuid():N}.xml");
                             File.WriteAllText(ptFile, ptXml);
-                            _logger.LogInformation("DiagnosticsDumpSaved: PrintTicket XML saved to {Path}", ptFile);
+                            _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintTicketSaved"), ptFile);
                         }
                     }
                 }

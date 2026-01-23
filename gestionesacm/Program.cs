@@ -11,6 +11,182 @@ using System.Threading;
 
 const string serviceName = "ServizioAntiCopieMultiple";
 
+// Current UI language (two-letter code). Default to Italian
+string currentLanguage = "it";
+
+// Simple localization helper for this console tool (supports 'it' and 'en')
+static class Localizer
+{
+    private static string _lang = "it";
+    public static string Language { get => _lang; set { _lang = string.IsNullOrEmpty(value) ? "it" : value; } }
+    private static readonly Dictionary<string, Dictionary<string, string>> _map = new()
+    {
+        ["it"] = new Dictionary<string,string>
+        {
+            ["ToolTitle"] = "Servizio Anti Copie Multiple - Tool di gestione",
+            ["ServiceInstalled"] = "Servizio installato: {0}",
+            ["ServiceStatus"] = "Stato servizio: {0}",
+            ["CannotGetStatus"] = "Impossibile ottenere lo stato del servizio: {0}",
+            ["ChooseAction"] = "Scegli un'azione:",
+            ["InstallService"] = "1) Installa servizio",
+            ["UninstallService"] = "1) Disinstalla servizio",
+            ["StartService"] = "2) Avvia servizio come servizio di Windows",
+            ["StopService"] = "3) Ferma servizio",
+            ["RunConsole"] = "4) Esegui servizio in modalità console (--console) (utile per debug/diagnostica)",
+            ["ConfigureManual"] = "5) Configura impostazioni stampa manualmente",
+            ["Exit"] = "0) Esci",
+            ["NotAdminRetry"] = "Impossibile ottenere i privilegi elevati automaticamente. Avvia il tool come amministratore.",
+            ["InstallPromptExeNotFound"] = "Eseguibile del servizio non trovato automaticamente.",
+            ["InstallAskExePath"] = "Inserisci il percorso completo dell'eseguibile del servizio (o premi invio per annullare): ",
+            ["InstallExeNotSpecified"] = "Eseguibile non specificato o non trovato.",
+            ["EventLogCreateWarning"] = "Warning: impossibile creare la sorgente EventLog: {0}",
+            ["InstallSucceededAskConfigure"] = "Installazione riuscita. Vuoi configurare le impostazioni ora? (S/n): ",
+            ["ConfigSavedAt"] = "Configurazione salvata in: {0}",
+            ["InstallSuccess"] = "Installazione riuscita.",
+            ["InstallFailed"] = "Installazione fallita: {0}",
+            ["UninstallSuccess"] = "Disinstallazione riuscita.",
+            ["UninstallFailed"] = "Disinstallazione fallita: {0}",
+            ["StartSuccess"] = "Servizio avviato.",
+            ["StartFailed"] = "Avvio fallito: {0}",
+            ["StopSuccess"] = "Servizio fermato.",
+            ["StopFailed"] = "Arresto fallito: {0}",
+            ["RunConsoleStarted"] = "Servizio avviato in modalità console (PID {0}). Premi invio per terminare il processo e ritornare al menu.",
+            ["PressEnterToContinue"] = "Premi invio per continuare...",
+            ["PromptChoice"] = "Scelta: ",
+            ["ConfigMenuTitle"] = "Configurazione PrintMonitor (premi invio per usare il valore predefinito)",
+            ["EnableScannerPrompt"] = "Abilitare lo scanner in servizio?",
+            ["SaveNetDumpPrompt"] = "Salvare dump diagnostici per stampanti di rete?",
+            ["EnableNetCancelPrompt"] = "Consentire cancellazione automatica per stampanti di rete?",
+            ["ScanIntervalPrompt"] = "Intervallo scanner (secondi)",
+            ["JobAgePrompt"] = "Soglia età job (secondi)",
+            ["SigWindowPrompt"] = "Finestra signature (secondi)",
+            ["ConfigUpdated"] = "Configurazione aggiornata.",
+            ["LanguagePrompt"] = "Scegli lingua / Choose language: 1) Italiano 2) English (default Italiano): ",
+            ["LanguageSet"] = "Lingua impostata su: {0}"
+        },
+        ["en"] = new Dictionary<string,string>
+        {
+            ["ToolTitle"] = "Anti Multiple Copies Service - Management Tool",
+            ["ServiceInstalled"] = "Service installed: {0}",
+            ["ServiceStatus"] = "Service status: {0}",
+            ["CannotGetStatus"] = "Unable to get service status: {0}",
+            ["ChooseAction"] = "Choose an action:",
+            ["InstallService"] = "1) Install service",
+            ["UninstallService"] = "1) Uninstall service",
+            ["StartService"] = "2) Start service (Windows service)",
+            ["StopService"] = "3) Stop service",
+            ["RunConsole"] = "4) Run service in console mode (--console) (useful for debug)",
+            ["ConfigureManual"] = "5) Configure print settings manually",
+            ["Exit"] = "0) Exit",
+            ["NotAdminRetry"] = "Unable to automatically obtain elevated privileges. Run the tool as administrator.",
+            ["InstallPromptExeNotFound"] = "Service executable not found automatically.",
+            ["InstallAskExePath"] = "Enter full path to service executable (or press enter to cancel): ",
+            ["InstallExeNotSpecified"] = "Executable not specified or not found.",
+            ["EventLogCreateWarning"] = "Warning: unable to create EventLog source: {0}",
+            ["InstallSucceededAskConfigure"] = "Installation succeeded. Configure settings now? (Y/n): ",
+            ["ConfigSavedAt"] = "Configuration saved at: {0}",
+            ["InstallSuccess"] = "Installation succeeded.",
+            ["InstallFailed"] = "Installation failed: {0}",
+            ["UninstallSuccess"] = "Uninstallation succeeded.",
+            ["UninstallFailed"] = "Uninstallation failed: {0}",
+            ["StartSuccess"] = "Service started.",
+            ["StartFailed"] = "Start failed: {0}",
+            ["StopSuccess"] = "Service stopped.",
+            ["StopFailed"] = "Stop failed: {0}",
+            ["RunConsoleStarted"] = "Service started in console mode (PID {0}). Press Enter to stop the process and return to the menu.",
+            ["PressEnterToContinue"] = "Press Enter to continue...",
+            ["PromptChoice"] = "Choice: ",
+            ["ConfigMenuTitle"] = "PrintMonitor configuration (press enter to use default)",
+            ["EnableScannerPrompt"] = "Enable scanner in service?",
+            ["SaveNetDumpPrompt"] = "Save diagnostics dumps for network printers?",
+            ["EnableNetCancelPrompt"] = "Allow automatic cancellation for network printers?",
+            ["ScanIntervalPrompt"] = "Scanner interval (seconds)",
+            ["JobAgePrompt"] = "Job age threshold (seconds)",
+            ["SigWindowPrompt"] = "Signature window (seconds)",
+            ["ConfigUpdated"] = "Configuration updated.",
+            ["LanguagePrompt"] = "Choose language / Scegli lingua: 1) Italiano 2) English (default Italiano): ",
+            ["LanguageSet"] = "Language set to: {0}"
+        }
+    };
+
+    public static string T(string key)
+    {
+        var lang = _lang ?? "it";
+        if (_map.TryGetValue(lang, out var dict) && dict.TryGetValue(key, out var val)) return val;
+        // fallback to italian
+        if (_map.TryGetValue("it", out var def) && def.TryGetValue(key, out var dval)) return dval;
+        return key;
+    }
+}
+
+string GetSharedConfigPath()
+{
+    var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple");
+    Directory.CreateDirectory(dir);
+    return Path.Combine(dir, "config.json");
+}
+
+void LoadLanguageFromConfig()
+{
+    try
+    {
+        var path = GetSharedConfigPath();
+        if (!File.Exists(path)) return;
+        var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+        if (doc.RootElement.TryGetProperty("Language", out var langEl))
+        {
+            var lang = langEl.GetString();
+            if (!string.IsNullOrEmpty(lang))
+            {
+                currentLanguage = lang;
+                Localizer.Language = lang;
+            }
+        }
+    }
+    catch { }
+}
+
+void PromptLanguage()
+{
+    Console.Write(Localizer.T("LanguagePrompt"));
+    var sel = Console.ReadLine();
+    if (string.IsNullOrWhiteSpace(sel) || sel.Trim() == "1")
+    {
+        currentLanguage = "it";
+    }
+    else
+    {
+        currentLanguage = "en";
+    }
+    Localizer.Language = currentLanguage;
+    Console.WriteLine(Localizer.T("LanguageSet"), currentLanguage);
+
+    // Persist language choice to shared config so the service and future runs pick it up
+    try
+    {
+        var path = GetSharedConfigPath();
+        Dictionary<string, object?> root = new();
+        if (File.Exists(path))
+        {
+            try
+            {
+                root = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(File.ReadAllText(path)) ?? new();
+            }
+            catch { root = new(); }
+        }
+
+        root["Language"] = currentLanguage;
+
+        var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(root, opts));
+    }
+    catch { }
+}
+
+// Try load language before showing UI
+LoadLanguageFromConfig();
+if (string.IsNullOrEmpty(Localizer.Language)) PromptLanguage();
+
 bool IsAdministrator()
 {
     try
@@ -58,7 +234,7 @@ void EnsureElevated()
         }
         else
         {
-            Console.WriteLine("Impossibile ottenere i privilegi elevati automaticamente. Avvia il tool come amministratore.");
+            Console.WriteLine(Localizer.T("NotAdminRetry"));
             Thread.Sleep(1500);
         }
     }
@@ -67,39 +243,39 @@ void EnsureElevated()
 void ShowMenu()
 {
     Console.Clear();
-    Console.WriteLine("Servizio Anti Copie Multiple - Tool di gestione\n");
+    Console.WriteLine(Localizer.T("ToolTitle") + "\n");
 
     bool isInstalled = ServiceController.GetServices().Any(s => s.ServiceName.Equals(serviceName, StringComparison.OrdinalIgnoreCase));
-    Console.WriteLine($"Servizio installato: {isInstalled}");
+    Console.WriteLine(string.Format(Localizer.T("ServiceInstalled"), isInstalled));
     if (isInstalled)
     {
         try
         {
             using var sc = new ServiceController(serviceName);
-            Console.WriteLine($"Stato servizio: {sc.Status}");
+            Console.WriteLine(string.Format(Localizer.T("ServiceStatus"), sc.Status));
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Impossibile ottenere lo stato del servizio: {ex.Message}");
+            Console.WriteLine(string.Format(Localizer.T("CannotGetStatus"), ex.Message));
         }
     }
 
-    Console.WriteLine('\n' + "Scegli un'azione:");
+    Console.WriteLine('\n' + Localizer.T("ChooseAction"));
     // Make choices stable and logical
     if (!isInstalled)
     {
-        Console.WriteLine("1) Installa servizio");
-        // no unrelated utilities here
-        Console.WriteLine("0) Esci");
+        Console.WriteLine(Localizer.T("InstallService"));
+         // no unrelated utilities here
+        Console.WriteLine(Localizer.T("Exit"));
     }
     else
     {
-        Console.WriteLine("1) Disinstalla servizio");
-        Console.WriteLine("2) Avvia servizio come servizio di Windows");
-        Console.WriteLine("3) Ferma servizio");
-        Console.WriteLine("4) Esegui servizio in modalità console (--console) (utile per debug/diagnostica)");
-        Console.WriteLine("5) Configura impostazioni stampa manualmente");
-        Console.WriteLine("0) Esci");
+        Console.WriteLine(Localizer.T("UninstallService"));
+        Console.WriteLine(Localizer.T("StartService"));
+        Console.WriteLine(Localizer.T("StopService"));
+        Console.WriteLine(Localizer.T("RunConsole"));
+        Console.WriteLine(Localizer.T("ConfigureManual"));
+        Console.WriteLine(Localizer.T("Exit"));
     }
 }
 
@@ -138,7 +314,7 @@ bool TryInstallService(out string message)
 {
     if (!IsAdministrator())
     {
-        message = "Operazione richiede privilegi amministrativi. Riavvia il tool come amministratore.";
+        message = Localizer.T("NotAdminRetry");
         return false;
     }
 
@@ -147,12 +323,12 @@ bool TryInstallService(out string message)
         string? exePath = FindServiceExe();
         if (string.IsNullOrEmpty(exePath))
         {
-            Console.WriteLine("Eseguibile del servizio non trovato automaticamente.");
-            Console.Write("Inserisci il percorso completo dell'eseguibile del servizio (o premi invio per annullare): ");
+            Console.WriteLine(Localizer.T("InstallPromptExeNotFound"));
+            Console.Write(Localizer.T("InstallAskExePath"));
             var input = Console.ReadLine();
             if (string.IsNullOrWhiteSpace(input) || !File.Exists(input))
             {
-                message = "Eseguibile non specificato o non trovato.";
+                message = Localizer.T("InstallExeNotSpecified");
                 return false;
             }
             exePath = input.Trim('"');
@@ -184,33 +360,33 @@ bool TryInstallService(out string message)
             }
             catch (Exception ex)
             {
-                message += "\nWarning: impossibile creare la sorgente EventLog: " + ex.Message;
+                message += "\n" + string.Format(Localizer.T("EventLogCreateWarning"), ex.Message);
             }
 
             // After successful install, offer to configure settings now and save to ProgramData
-            Console.WriteLine("Installazione riuscita. Vuoi configurare le impostazioni ora? (S/n): ");
+            Console.Write(Localizer.T("InstallSucceededAskConfigure"));
             var ans = Console.ReadLine();
-            if (string.IsNullOrWhiteSpace(ans) || ans.Trim().Equals("s", StringComparison.OrdinalIgnoreCase))
-            {
-                var cfg = PromptPrintMonitorSettings();
-                SaveConfigToCommonAppData(cfg);
-            }
-        }
+            if (string.IsNullOrWhiteSpace(ans) || ans.Trim().Equals("s", StringComparison.OrdinalIgnoreCase) || ans.Trim().Equals("y", StringComparison.OrdinalIgnoreCase))
+             {
+                 var cfg = PromptPrintMonitorSettings();
+                 SaveConfigToCommonAppData(cfg);
+             }
+         }
 
-        return created;
-    }
-    catch (Exception ex)
-    {
-        message = ex.Message;
-        return false;
-    }
+         return created;
+     }
+     catch (Exception ex)
+     {
+         message = ex.Message;
+         return false;
+     }
 }
 
 bool TryUninstallService(out string message)
 {
     if (!IsAdministrator())
     {
-        message = "Operazione richiede privilegi amministrativi. Riavvia il tool come amministratore.";
+        message = Localizer.T("NotAdminRetry");
         return false;
     }
 
@@ -258,7 +434,7 @@ bool TryStartService(out string message)
 {
     if (!IsAdministrator())
     {
-        message = "Operazione richiede privilegi amministrativi. Riavvia il tool come amministratore.";
+        message = Localizer.T("NotAdminRetry");
         return false;
     }
 
@@ -286,7 +462,7 @@ bool TryStopService(out string message)
 {
     if (!IsAdministrator())
     {
-        message = "Operazione richiede privilegi amministrativi. Riavvia il tool come amministratore.";
+        message = Localizer.T("NotAdminRetry");
         return false;
     }
 
@@ -353,26 +529,32 @@ bool TryRunServiceConsole(out string message)
     }
 }
 
-string GetSharedConfigPath()
-{
-    var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ServizioAntiCopieMultiple");
-    Directory.CreateDirectory(dir);
-    return Path.Combine(dir, "config.json");
-}
-
 void SaveConfigToCommonAppData(Dictionary<string, object> printMonitorSettings)
 {
     try
     {
-        var root = new Dictionary<string, object>
-        {
-            ["PrintMonitor"] = printMonitorSettings
-        };
+        var root = new Dictionary<string, object?>();
 
+        // preserve existing Language if present
         string path = GetSharedConfigPath();
+        if (File.Exists(path))
+        {
+            try
+            {
+                var existing = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(File.ReadAllText(path));
+                if (existing != null && existing.TryGetValue("Language", out var langVal))
+                {
+                    root["Language"] = langVal;
+                }
+            }
+            catch { }
+        }
+
+        root["PrintMonitor"] = printMonitorSettings;
+
         var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(root, opts));
-        Console.WriteLine($"Configurazione salvata in: {path}");
+        Console.WriteLine(string.Format(Localizer.T("ConfigSavedAt"), path));
     }
     catch (Exception ex)
     {
@@ -386,10 +568,17 @@ Dictionary<string, object> PromptPrintMonitorSettings()
 
     bool ReadBool(string prompt, bool defaultVal)
     {
-        Console.Write(prompt + $" ({(defaultVal ? "S" : "N")}/n): ");
+        // Show a clear prompt with the default highlighted: use "S/n" when default is Yes, "s/N" when default is No
+        string hint = defaultVal ? "S/n" : "s/N";
+        Console.Write(prompt + $" ({hint}): ");
         var a = Console.ReadLine();
         if (string.IsNullOrWhiteSpace(a)) return defaultVal;
-        return a.Trim().Equals("s", StringComparison.OrdinalIgnoreCase) || a.Trim().Equals("y", StringComparison.OrdinalIgnoreCase);
+        var t = a.Trim();
+        // Accept common variants: 's', 'si', 'y' for yes; 'n', 'no' for no
+        if (t.Equals("s", StringComparison.OrdinalIgnoreCase) || t.Equals("si", StringComparison.OrdinalIgnoreCase) || t.Equals("y", StringComparison.OrdinalIgnoreCase)) return true;
+        if (t.Equals("n", StringComparison.OrdinalIgnoreCase) || t.Equals("no", StringComparison.OrdinalIgnoreCase)) return false;
+        // Fallback to default if input unrecognized
+        return defaultVal;
     }
 
     int ReadInt(string prompt, int defaultVal)
@@ -400,13 +589,13 @@ Dictionary<string, object> PromptPrintMonitorSettings()
         return defaultVal;
     }
 
-    Console.WriteLine("Configurazione PrintMonitor (premi invio per usare il valore predefinito)");
-    bool enableScanner = ReadBool("Abilitare lo scanner in servizio?", false);
-    bool saveNetworkDumps = ReadBool("Salvare dump diagnostici per stampanti di rete?", true);
-    bool enableNetworkCancel = ReadBool("Consentire cancellazione automatica per stampanti di rete?", false);
-    int scanInterval = ReadInt("Intervallo scanner (secondi)", 5);
-    int jobAge = ReadInt("Soglia età job (secondi)", 30);
-    int sigWindow = ReadInt("Finestra signature (secondi)", 10);
+    Console.WriteLine(Localizer.T("ConfigMenuTitle"));
+    bool enableScanner = ReadBool(Localizer.T("EnableScannerPrompt"), false);
+    bool saveNetworkDumps = ReadBool(Localizer.T("SaveNetDumpPrompt"), true);
+    bool enableNetworkCancel = ReadBool(Localizer.T("EnableNetCancelPrompt"), false);
+    int scanInterval = ReadInt(Localizer.T("ScanIntervalPrompt"), 5);
+    int jobAge = ReadInt(Localizer.T("JobAgePrompt"), 30);
+    int sigWindow = ReadInt(Localizer.T("SigWindowPrompt"), 10);
 
     settings["EnableScannerInService"] = enableScanner;
     settings["SaveNetworkDumps"] = saveNetworkDumps;
@@ -424,7 +613,7 @@ EnsureElevated();
 while (true)
 {
     ShowMenu();
-    Console.Write("Scelta: ");
+    Console.Write(Localizer.T("PromptChoice"));
     var ch = Console.ReadLine();
     if (string.IsNullOrWhiteSpace(ch)) continue;
     if (ch == "0") break;
@@ -437,12 +626,12 @@ while (true)
         if (!isInstalled)
         {
             ok = TryInstallService(out resultMsg);
-            Console.WriteLine(ok ? "Installazione riuscita." : "Installazione fallita: " + resultMsg);
+            Console.WriteLine(ok ? Localizer.T("InstallSuccess") : Localizer.T("InstallFailed"), resultMsg);
         }
         else
         {
             ok = TryUninstallService(out resultMsg);
-            Console.WriteLine(ok ? "Disinstallazione riuscita." : "Disinstallazione fallita: " + resultMsg);
+            Console.WriteLine(ok ? Localizer.T("UninstallSuccess") : Localizer.T("UninstallFailed"), resultMsg);
         }
     }
     else if (ch == "5")
@@ -450,18 +639,18 @@ while (true)
         // Manual configuration helper
         var cfg = PromptPrintMonitorSettings();
         SaveConfigToCommonAppData(cfg);
-        Console.WriteLine("Configurazione aggiornata.");
+        Console.WriteLine(Localizer.T("ConfigUpdated"));
         ok = true;
     }
     else if (ch == "2")
     {
         ok = TryStartService(out resultMsg);
-        Console.WriteLine(ok ? resultMsg : "Avvio fallito: " + resultMsg);
+        Console.WriteLine(ok ? resultMsg : Localizer.T("StartFailed"), resultMsg);
     }
     else if (ch == "3")
     {
         ok = TryStopService(out resultMsg);
-        Console.WriteLine(ok ? resultMsg : "Arresto fallito: " + resultMsg);
+        Console.WriteLine(ok ? resultMsg : Localizer.T("StopFailed"), resultMsg);
     }
     else if (ch == "4")
     {
@@ -489,6 +678,6 @@ while (true)
         }
     }
 
-    Console.WriteLine("Premi invio per continuare...");
+    Console.WriteLine(Localizer.T("PressEnterToContinue"));
     Console.ReadLine();
 }
