@@ -11,7 +11,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Printing;
 using Microsoft.Extensions.Configuration;
-using System.Runtime.Interop Services;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Linq;
 using ServizioAntiCopieMultiple.Helpers;
@@ -237,7 +237,7 @@ namespace ServizioAntiCopieMultiple
                             
                             queue.Refresh();
 
-                            var groups = new Dictionary<string, (int Count, int JobId, string Doc, string Owner)>()));
+                            var groups = new Dictionary<string, (int Count, int JobId, string Doc, string Owner)>();
 
                             var jobs = queue.GetPrintJobInfoCollection();
                             foreach (PrintSystemJobInfo job in jobs)

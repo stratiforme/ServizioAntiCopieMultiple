@@ -9,14 +9,11 @@ using System.Threading;
 
 [assembly: SupportedOSPlatform("windows")]
 
-const string serviceName = "ServizioAntiCopieMultiple";
-
-// Current UI language (two-letter code). Default to Italian
-string currentLanguage = "it";
-
-// Simple localization helper for this console tool (supports 'it' and 'en')
 static class Localizer
 {
+    public const string ServiceName = "ServizioAntiCopieMultiple";
+    public static string CurrentLanguage = "it";
+
     private static string _lang = "it";
     public static string Language { get => _lang; set { _lang = string.IsNullOrEmpty(value) ? "it" : value; } }
     private static readonly Dictionary<string, Dictionary<string, string>> _map = new()
@@ -113,7 +110,6 @@ static class Localizer
     {
         var lang = _lang ?? "it";
         if (_map.TryGetValue(lang, out var dict) && dict.TryGetValue(key, out var val)) return val;
-        // fallback to italian
         if (_map.TryGetValue("it", out var def) && def.TryGetValue(key, out var dval)) return dval;
         return key;
     }
@@ -138,7 +134,7 @@ void LoadLanguageFromConfig()
             var lang = langEl.GetString();
             if (!string.IsNullOrEmpty(lang))
             {
-                currentLanguage = lang;
+                Localizer.CurrentLanguage = lang;
                 Localizer.Language = lang;
             }
         }
@@ -152,16 +148,15 @@ void PromptLanguage()
     var sel = Console.ReadLine();
     if (string.IsNullOrWhiteSpace(sel) || sel.Trim() == "1")
     {
-        currentLanguage = "it";
+        Localizer.CurrentLanguage = "it";
     }
     else
     {
-        currentLanguage = "en";
+        Localizer.CurrentLanguage = "en";
     }
-    Localizer.Language = currentLanguage;
-    Console.WriteLine(Localizer.T("LanguageSet"), currentLanguage);
+    Localizer.Language = Localizer.CurrentLanguage;
+    Console.WriteLine(Localizer.T("LanguageSet"), Localizer.CurrentLanguage);
 
-    // Persist language choice to shared config so the service and future runs pick it up
     try
     {
         var path = GetSharedConfigPath();
@@ -175,7 +170,7 @@ void PromptLanguage()
             catch { root = new(); }
         }
 
-        root["Language"] = currentLanguage;
+        root["Language"] = Localizer.CurrentLanguage;
 
         var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(root, opts));
@@ -245,13 +240,13 @@ void ShowMenu()
     Console.Clear();
     Console.WriteLine(Localizer.T("ToolTitle") + "\n");
 
-    bool isInstalled = ServiceController.GetServices().Any(s => s.ServiceName.Equals(serviceName, StringComparison.OrdinalIgnoreCase));
+    bool isInstalled = ServiceController.GetServices().Any(s => s.ServiceName.Equals(Localizer.ServiceName, StringComparison.OrdinalIgnoreCase));
     Console.WriteLine(string.Format(Localizer.T("ServiceInstalled"), isInstalled));
     if (isInstalled)
     {
         try
         {
-            using var sc = new ServiceController(serviceName);
+            using var sc = new ServiceController(Localizer.ServiceName);
             Console.WriteLine(string.Format(Localizer.T("ServiceStatus"), sc.Status));
         }
         catch (Exception ex)
@@ -335,7 +330,7 @@ bool TryInstallService(out string message)
         }
 
         // sc create requires cmd invocation
-        var psi = new ProcessStartInfo("sc.exe", $"create {serviceName} binPath= \"{exePath}\" start= auto DisplayName= \"Servizio Anti Copie Multiple\"")
+        var psi = new ProcessStartInfo("sc.exe", $"create {Localizer.ServiceName} binPath= \"{exePath}\" start= auto DisplayName= \"Servizio Anti Copie Multiple\"")
         {
             RedirectStandardOutput = true,
             UseShellExecute = false,
@@ -352,9 +347,9 @@ bool TryInstallService(out string message)
             // Try to create EventLog source so the service can write to Application log
             try
             {
-                if (!EventLog.SourceExists(serviceName))
+                if (!EventLog.SourceExists(Localizer.ServiceName))
                 {
-                    EventLog.CreateEventSource(new EventSourceCreationData(serviceName, "Application"));
+                    EventLog.CreateEventSource(new EventSourceCreationData(Localizer.ServiceName, "Application"));
                     message += "\nEventLog source created.";
                 }
             }
@@ -392,7 +387,7 @@ bool TryUninstallService(out string message)
 
     try
     {
-        var psi = new ProcessStartInfo("sc.exe", $"delete {serviceName}")
+        var psi = new ProcessStartInfo("sc.exe", $"delete {Localizer.ServiceName}")
         {
             RedirectStandardOutput = true,
             UseShellExecute = false,
@@ -409,9 +404,9 @@ bool TryUninstallService(out string message)
             // Try to remove EventLog source
             try
             {
-                if (EventLog.SourceExists(serviceName))
+                if (EventLog.SourceExists(Localizer.ServiceName))
                 {
-                    EventLog.DeleteEventSource(serviceName);
+                    EventLog.DeleteEventSource(Localizer.ServiceName);
                     message += "\nEventLog source removed.";
                 }
             }
@@ -440,7 +435,7 @@ bool TryStartService(out string message)
 
     try
     {
-        using var sc = new ServiceController(serviceName);
+        using var sc = new ServiceController(Localizer.ServiceName);
         if (sc.Status == ServiceControllerStatus.Running)
         {
             message = "Il servizio è già in esecuzione.";
@@ -468,7 +463,7 @@ bool TryStopService(out string message)
 
     try
     {
-        using var sc = new ServiceController(serviceName);
+        using var sc = new ServiceController(Localizer.ServiceName);
         if (sc.Status == ServiceControllerStatus.Stopped)
         {
             message = "Il servizio è già fermo.";
@@ -622,7 +617,7 @@ while (true)
     bool ok = false;
     if (ch == "1")
     {
-        bool isInstalled = ServiceController.GetServices().Any(s => s.ServiceName.Equals(serviceName, StringComparison.OrdinalIgnoreCase));
+        bool isInstalled = ServiceController.GetServices().Any(s => s.ServiceName.Equals(Localizer.ServiceName, StringComparison.OrdinalIgnoreCase));
         if (!isInstalled)
         {
             ok = TryInstallService(out resultMsg);

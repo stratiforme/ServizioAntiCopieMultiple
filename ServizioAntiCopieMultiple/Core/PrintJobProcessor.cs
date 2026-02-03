@@ -17,32 +17,57 @@ namespace ServizioAntiCopieMultiple
 
         public ValueTask EnqueueAsync(Func<Task> work)
         {
-            if (_disposed) return new ValueTask(Task.CompletedTask);
-            if (!_channel.Writer.TryWrite(work))
+            if (work == null)
+                throw new ArgumentNullException(nameof(work));
+
+            if (_disposed)
                 return new ValueTask(Task.CompletedTask);
+
+            if (!_channel.Writer.TryWrite(work))
+            {
+                _channel.Writer.Complete();
+                return new ValueTask(Task.CompletedTask);
+            }
+
             return ValueTask.CompletedTask;
         }
 
         private async Task ConsumeAsync()
         {
-            await foreach (var work in _channel.Reader.ReadAllAsync().ConfigureAwait(false))
+            try
             {
-                try
+                await foreach (var work in _channel.Reader.ReadAllAsync().ConfigureAwait(false))
                 {
-                    await work().ConfigureAwait(false);
+                    try
+                    {
+                        await work().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Exception in queued work: {ex}");
+                    }
                 }
-                catch
-                {
-                    // swallow exceptions to avoid halting the consumer loop
-                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Consumer loop failed: {ex}");
             }
         }
 
         public async Task StopAsync()
         {
-            if (_disposed) return;
+            if (_disposed)
+                return;
+
             _channel.Writer.Complete();
-            try { await _consumer.ConfigureAwait(false); } catch { }
+            try
+            {
+                await _consumer.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error stopping consumer: {ex}");
+            }
             _disposed = true;
         }
 

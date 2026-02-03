@@ -3,12 +3,16 @@ using System;
 using System.Collections.Generic;
 using System.Management;
 using System.Runtime.Versioning;
+using System.Text.RegularExpressions;
 using ServizioAntiCopieMultiple.Helpers;
 
 namespace ServizioAntiCopieMultiple
 {
     public static class PrintJobParser
     {
+        private static readonly Regex _copiesRegex = new Regex(@",\s*(\d+)\s*$", RegexOptions.Compiled);
+        private static readonly Regex _trailingNumberRegex = new Regex(@"(\d+)\s*$", RegexOptions.Compiled);
+
         public static string ParseJobId(string? name)
         {
             if (string.IsNullOrEmpty(name))
@@ -22,8 +26,9 @@ namespace ServizioAntiCopieMultiple
 
                 return name;
             }
-            catch
+            catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"Error parsing job ID: {ex}");
                 return Guid.NewGuid().ToString();
             }
         }
@@ -37,32 +42,31 @@ namespace ServizioAntiCopieMultiple
             {
                 if (props.TryGetValue("Copies", out var copiesObj) && copiesObj != null)
                 {
-                    if (copiesObj is int i) return i;
-                    if (int.TryParse(copiesObj.ToString(), out var parsed)) return parsed;
+                    if (copiesObj is int i)
+                        return i;
+                    if (int.TryParse(copiesObj.ToString(), out var parsed))
+                        return parsed;
                 }
 
                 if (props.TryGetValue("TotalPages", out var pagesObj) && pagesObj != null)
                 {
-                    if (pagesObj is int ip) return ip;
-                    if (int.TryParse(pagesObj.ToString(), out var parsedPages)) return parsedPages;
+                    if (pagesObj is int ip)
+                        return ip;
+                    if (int.TryParse(pagesObj.ToString(), out var parsedPages))
+                        return parsedPages;
                 }
 
-                // Fallback: some drivers embed copies count in the job Name (e.g. "Printer name, 10")
                 if (props.TryGetValue("Name", out var nameObj) && nameObj != null)
                 {
                     var nameStr = nameObj.ToString() ?? string.Empty;
-                    var m = System.Text.RegularExpressions.Regex.Match(nameStr, ",\\s*(\\d+)\\s*$");
-                    if (m.Success && int.TryParse(m.Groups[1].Value, out var fromName) && fromName > 0)
-                        return fromName;
-
-                    // also try any trailing number
-                    var m2 = System.Text.RegularExpressions.Regex.Match(nameStr, "(\\d+)\\s*$");
-                    if (m2.Success && int.TryParse(m2.Groups[1].Value, out var fromName2) && fromName2 > 0)
-                        return fromName2;
+                    int? nameResult = ParseCopiesFromString(nameStr);
+                    if (nameResult.HasValue)
+                        return nameResult.Value;
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"Error getting copies from dictionary: {ex}");
             }
 
             return 1;
@@ -79,26 +83,14 @@ namespace ServizioAntiCopieMultiple
                 var copiesObj = WmiHelper.GetPropertyValueSafe(target, "Copies");
                 if (copiesObj != null)
                 {
-                    if (copiesObj is int ci) return ci;
-                    if (int.TryParse(copiesObj.ToString(), out var parsed)) return parsed;
+                    if (copiesObj is int ci)
+                        return ci;
+                    if (int.TryParse(copiesObj.ToString(), out var parsed))
+                        return parsed;
                 }
 
-                int totalPages = 0;
-                var totalObj = WmiHelper.GetPropertyValueSafe(target, "TotalPages");
-                if (totalObj != null && int.TryParse(totalObj.ToString(), out var tp))
-                    totalPages = tp;
-
-                int pagesPerDoc = 0;
-                string[] pagePropCandidates = { "Pages", "NumberOfPages", "PageCount" };
-                foreach (var prop in pagePropCandidates)
-                {
-                    var pObj = WmiHelper.GetPropertyValueSafe(target, prop);
-                    if (pObj != null && int.TryParse(pObj.ToString(), out var pVal) && pVal > 0)
-                    {
-                        pagesPerDoc = pVal;
-                        break;
-                    }
-                }
+                int totalPages = GetIntPropertyValue(target, "TotalPages");
+                int pagesPerDoc = GetPagesPerDoc(target);
 
                 if (pagesPerDoc > 0 && totalPages > 0)
                 {
@@ -107,59 +99,132 @@ namespace ServizioAntiCopieMultiple
                 }
 
                 if (totalPages > 1)
-                {
                     return Math.Min(totalPages, 1000);
-                }
 
-                try
-                {
-                    object? ptObj = null;
-                    foreach (var pname in new[] { "PrintTicket", "PrintTicketXML", "PrintTicketData" })
-                    {
-                        ptObj = WmiHelper.GetPropertyValueSafe(target, pname);
-                        if (ptObj != null) break;
-                    }
+                int? ptCopies = TryParsePrintTicket(target);
+                if (ptCopies.HasValue && ptCopies.Value > 0)
+                    return ptCopies.Value;
 
-                    if (ptObj != null)
-                    {
-                        string ptXml = ptObj.ToString() ?? string.Empty;
-                        if (!string.IsNullOrEmpty(ptXml))
-                        {
-                            var ptCopies = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
-                            if (ptCopies.HasValue && ptCopies.Value > 0) return ptCopies.Value;
-                        }
-                    }
-                }
-                catch
-                {
-                }
-
-                // Fallback: parse copies from the Name property when present (many drivers append ", <copies>" to the name)
-                try
-                {
-                    var nameObj = WmiHelper.GetPropertyValueSafe(target, "Name");
-                    if (nameObj != null)
-                    {
-                        var nameStr = nameObj.ToString() ?? string.Empty;
-                        var m = System.Text.RegularExpressions.Regex.Match(nameStr, ",\\s*(\\d+)\\s*$");
-                        if (m.Success && int.TryParse(m.Groups[1].Value, out var nameCopies) && nameCopies > 0)
-                            return nameCopies;
-
-                        // also allow any trailing number
-                        var m2 = System.Text.RegularExpressions.Regex.Match(nameStr, "(\\d+)\\s*$");
-                        if (m2.Success && int.TryParse(m2.Groups[1].Value, out var nameCopies2) && nameCopies2 > 0)
-                            return nameCopies2;
-                    }
-                }
-                catch
-                {
-                }
+                int? nameCopies = TryParseNameProperty(target);
+                if (nameCopies.HasValue)
+                    return nameCopies.Value;
             }
-            catch
+            catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"Error getting copies from management object: {ex}");
             }
 
             return 1;
+        }
+
+        private static int GetIntPropertyValue(ManagementBaseObject? target, string propertyName)
+        {
+            if (target == null)
+                return 0;
+
+            try
+            {
+                var obj = WmiHelper.GetPropertyValueSafe(target, propertyName);
+                if (obj != null && int.TryParse(obj.ToString(), out var value))
+                    return value;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error getting property {propertyName}: {ex}");
+            }
+
+            return 0;
+        }
+
+        private static int GetPagesPerDoc(ManagementBaseObject? target)
+        {
+            if (target == null)
+                return 0;
+
+            string[] pagePropCandidates = { "Pages", "NumberOfPages", "PageCount" };
+            foreach (var prop in pagePropCandidates)
+            {
+                try
+                {
+                    var pObj = WmiHelper.GetPropertyValueSafe(target, prop);
+                    if (pObj != null && int.TryParse(pObj.ToString(), out var pVal) && pVal > 0)
+                        return pVal;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error getting page property {prop}: {ex}");
+                }
+            }
+
+            return 0;
+        }
+
+        private static int? TryParsePrintTicket(ManagementBaseObject? target)
+        {
+            if (target == null)
+                return null;
+
+            try
+            {
+                foreach (var pname in new[] { "PrintTicket", "PrintTicketXML", "PrintTicketData" })
+                {
+                    var ptObj = WmiHelper.GetPropertyValueSafe(target, pname);
+                    if (ptObj == null)
+                        continue;
+
+                    string ptXml = ptObj.ToString() ?? string.Empty;
+                    if (!string.IsNullOrEmpty(ptXml))
+                    {
+                        var ptCopies = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
+                        if (ptCopies.HasValue && ptCopies.Value > 0)
+                            return ptCopies.Value;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error parsing PrintTicket: {ex}");
+            }
+
+            return null;
+        }
+
+        private static int? TryParseNameProperty(ManagementBaseObject? target)
+        {
+            if (target == null)
+                return null;
+
+            try
+            {
+                var nameObj = WmiHelper.GetPropertyValueSafe(target, "Name");
+                if (nameObj == null)
+                    return null;
+
+                var nameStr = nameObj.ToString() ?? string.Empty;
+                return ParseCopiesFromString(nameStr);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error parsing name property: {ex}");
+            }
+
+            return null;
+        }
+
+        private static int? ParseCopiesFromString(string input)
+        {
+            if (string.IsNullOrEmpty(input))
+                return null;
+
+            var m = _copiesRegex.Match(input);
+            if (m.Success && int.TryParse(m.Groups[1].Value, out var fromName) && fromName > 0)
+                return fromName;
+
+            var m2 = _trailingNumberRegex.Match(input);
+            if (m2.Success && int.TryParse(m2.Groups[1].Value, out var fromName2) && fromName2 > 0)
+                return fromName2;
+
+            return null;
         }
     }
 }
