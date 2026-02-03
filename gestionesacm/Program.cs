@@ -9,109 +9,56 @@ using System.Threading;
 
 [assembly: SupportedOSPlatform("windows")]
 
-static class Localizer
+bool IsAdministrator()
 {
-    public const string ServiceName = "ServizioAntiCopieMultiple";
-    public static string CurrentLanguage = "it";
-
-    private static string _lang = "it";
-    public static string Language { get => _lang; set { _lang = string.IsNullOrEmpty(value) ? "it" : value; } }
-    private static readonly Dictionary<string, Dictionary<string, string>> _map = new()
+    try
     {
-        ["it"] = new Dictionary<string,string>
+        using var id = WindowsIdentity.GetCurrent();
+        var principal = new WindowsPrincipal(id);
+        return principal.IsInRole(WindowsBuiltInRole.Administrator);
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+bool TryRestartAsAdmin()
+{
+    try
+    {
+        var exe = Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName;
+        if (string.IsNullOrEmpty(exe)) return false;
+        var args = string.Join(' ', Environment.GetCommandLineArgs().Skip(1).Select(a => a.Contains(' ') ? '"' + a + '"' : a));
+        var psi = new ProcessStartInfo(exe, args)
         {
-            ["ToolTitle"] = "Servizio Anti Copie Multiple - Tool di gestione",
-            ["ServiceInstalled"] = "Servizio installato: {0}",
-            ["ServiceStatus"] = "Stato servizio: {0}",
-            ["CannotGetStatus"] = "Impossibile ottenere lo stato del servizio: {0}",
-            ["ChooseAction"] = "Scegli un'azione:",
-            ["InstallService"] = "1) Installa servizio",
-            ["UninstallService"] = "1) Disinstalla servizio",
-            ["StartService"] = "2) Avvia servizio come servizio di Windows",
-            ["StopService"] = "3) Ferma servizio",
-            ["RunConsole"] = "4) Esegui servizio in modalità console (--console) (utile per debug/diagnostica)",
-            ["ConfigureManual"] = "5) Configura impostazioni stampa manualmente",
-            ["Exit"] = "0) Esci",
-            ["NotAdminRetry"] = "Impossibile ottenere i privilegi elevati automaticamente. Avvia il tool come amministratore.",
-            ["InstallPromptExeNotFound"] = "Eseguibile del servizio non trovato automaticamente.",
-            ["InstallAskExePath"] = "Inserisci il percorso completo dell'eseguibile del servizio (o premi invio per annullare): ",
-            ["InstallExeNotSpecified"] = "Eseguibile non specificato o non trovato.",
-            ["EventLogCreateWarning"] = "Warning: impossibile creare la sorgente EventLog: {0}",
-            ["InstallSucceededAskConfigure"] = "Installazione riuscita. Vuoi configurare le impostazioni ora? (S/n): ",
-            ["ConfigSavedAt"] = "Configurazione salvata in: {0}",
-            ["InstallSuccess"] = "Installazione riuscita.",
-            ["InstallFailed"] = "Installazione fallita: {0}",
-            ["UninstallSuccess"] = "Disinstallazione riuscita.",
-            ["UninstallFailed"] = "Disinstallazione fallita: {0}",
-            ["StartSuccess"] = "Servizio avviato.",
-            ["StartFailed"] = "Avvio fallito: {0}",
-            ["StopSuccess"] = "Servizio fermato.",
-            ["StopFailed"] = "Arresto fallito: {0}",
-            ["RunConsoleStarted"] = "Servizio avviato in modalità console (PID {0}). Premi invio per terminare il processo e ritornare al menu.",
-            ["PressEnterToContinue"] = "Premi invio per continuare...",
-            ["PromptChoice"] = "Scelta: ",
-            ["ConfigMenuTitle"] = "Configurazione PrintMonitor (premi invio per usare il valore predefinito)",
-            ["EnableScannerPrompt"] = "Abilitare lo scanner in servizio?",
-            ["SaveNetDumpPrompt"] = "Salvare dump diagnostici per stampanti di rete?",
-            ["EnableNetCancelPrompt"] = "Consentire cancellazione automatica per stampanti di rete?",
-            ["ScanIntervalPrompt"] = "Intervallo scanner (secondi)",
-            ["JobAgePrompt"] = "Soglia età job (secondi)",
-            ["SigWindowPrompt"] = "Finestra signature (secondi)",
-            ["ConfigUpdated"] = "Configurazione aggiornata.",
-            ["LanguagePrompt"] = "Scegli lingua / Choose language: 1) Italiano 2) English (default Italiano): ",
-            ["LanguageSet"] = "Lingua impostata su: {0}"
-        },
-        ["en"] = new Dictionary<string,string>
+            UseShellExecute = true,
+            Verb = "runas"
+        };
+        Process.Start(psi);
+        return true;
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+void EnsureElevated()
+{
+    if (!IsAdministrator())
+    {
+        // Attempt to relaunch elevated automatically. Note: this will trigger the UAC prompt; cannot be bypassed programmatically.
+        if (TryRestartAsAdmin())
         {
-            ["ToolTitle"] = "Anti Multiple Copies Service - Management Tool",
-            ["ServiceInstalled"] = "Service installed: {0}",
-            ["ServiceStatus"] = "Service status: {0}",
-            ["CannotGetStatus"] = "Unable to get service status: {0}",
-            ["ChooseAction"] = "Choose an action:",
-            ["InstallService"] = "1) Install service",
-            ["UninstallService"] = "1) Uninstall service",
-            ["StartService"] = "2) Start service (Windows service)",
-            ["StopService"] = "3) Stop service",
-            ["RunConsole"] = "4) Run service in console mode (--console) (useful for debug)",
-            ["ConfigureManual"] = "5) Configure print settings manually",
-            ["Exit"] = "0) Exit",
-            ["NotAdminRetry"] = "Unable to automatically obtain elevated privileges. Run the tool as administrator.",
-            ["InstallPromptExeNotFound"] = "Service executable not found automatically.",
-            ["InstallAskExePath"] = "Enter full path to service executable (or press enter to cancel): ",
-            ["InstallExeNotSpecified"] = "Executable not specified or not found.",
-            ["EventLogCreateWarning"] = "Warning: unable to create EventLog source: {0}",
-            ["InstallSucceededAskConfigure"] = "Installation succeeded. Configure settings now? (Y/n): ",
-            ["ConfigSavedAt"] = "Configuration saved at: {0}",
-            ["InstallSuccess"] = "Installation succeeded.",
-            ["InstallFailed"] = "Installation failed: {0}",
-            ["UninstallSuccess"] = "Uninstallation succeeded.",
-            ["UninstallFailed"] = "Uninstallation failed: {0}",
-            ["StartSuccess"] = "Service started.",
-            ["StartFailed"] = "Start failed: {0}",
-            ["StopSuccess"] = "Service stopped.",
-            ["StopFailed"] = "Stop failed: {0}",
-            ["RunConsoleStarted"] = "Service started in console mode (PID {0}). Press Enter to stop the process and return to the menu.",
-            ["PressEnterToContinue"] = "Press Enter to continue...",
-            ["PromptChoice"] = "Choice: ",
-            ["ConfigMenuTitle"] = "PrintMonitor configuration (press enter to use default)",
-            ["EnableScannerPrompt"] = "Enable scanner in service?",
-            ["SaveNetDumpPrompt"] = "Save diagnostics dumps for network printers?",
-            ["EnableNetCancelPrompt"] = "Allow automatic cancellation for network printers?",
-            ["ScanIntervalPrompt"] = "Scanner interval (seconds)",
-            ["JobAgePrompt"] = "Job age threshold (seconds)",
-            ["SigWindowPrompt"] = "Signature window (seconds)",
-            ["ConfigUpdated"] = "Configuration updated.",
-            ["LanguagePrompt"] = "Choose language / Scegli lingua: 1) Italiano 2) English (default Italiano): ",
-            ["LanguageSet"] = "Language set to: {0}"
+            // Exit current non-elevated instance to allow elevated one to run
+            Environment.Exit(0);
         }
-    };
-
-    public static string T(string key)
-    {
-        var lang = _lang ?? "it";
-        if (_map.TryGetValue(lang, out var dict) && dict.TryGetValue(key, out var val)) return val;
-        if (_map.TryGetValue("it", out var def) && def.TryGetValue(key, out var dval)) return dval;
-        return key;
+        else
+        {
+            Console.WriteLine(Localizer.T("NotAdminRetry"));
+            Thread.Sleep(1500);
+        }
     }
 }
 
@@ -178,63 +125,6 @@ void PromptLanguage()
     catch { }
 }
 
-// Try load language before showing UI
-LoadLanguageFromConfig();
-if (string.IsNullOrEmpty(Localizer.Language)) PromptLanguage();
-
-bool IsAdministrator()
-{
-    try
-    {
-        using var id = WindowsIdentity.GetCurrent();
-        var principal = new WindowsPrincipal(id);
-        return principal.IsInRole(WindowsBuiltInRole.Administrator);
-    }
-    catch
-    {
-        return false;
-    }
-}
-
-bool TryRestartAsAdmin()
-{
-    try
-    {
-        var exe = Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName;
-        if (string.IsNullOrEmpty(exe)) return false;
-        var args = string.Join(' ', Environment.GetCommandLineArgs().Skip(1).Select(a => a.Contains(' ') ? '"' + a + '"' : a));
-        var psi = new ProcessStartInfo(exe, args)
-        {
-            UseShellExecute = true,
-            Verb = "runas"
-        };
-        Process.Start(psi);
-        return true;
-    }
-    catch
-    {
-        return false;
-    }
-}
-
-void EnsureElevated()
-{
-    if (!IsAdministrator())
-    {
-        // Attempt to relaunch elevated automatically. Note: this will trigger the UAC prompt; cannot be bypassed programmatically.
-        if (TryRestartAsAdmin())
-        {
-            // Exit current non-elevated instance to allow elevated one to run
-            Environment.Exit(0);
-        }
-        else
-        {
-            Console.WriteLine(Localizer.T("NotAdminRetry"));
-            Thread.Sleep(1500);
-        }
-    }
-}
-
 void ShowMenu()
 {
     Console.Clear();
@@ -288,10 +178,10 @@ string? FindServiceExe()
     // Check common publish/build locations relative to repo layout
     var fallbacks = new[]
     {
-        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Release", "net10.0", "publish", "ServizioAntiCopieMultiple.exe")),
-        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Release", "net10.0", "ServizioAntiCopieMultiple.exe")),
-        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Debug", "net10.0", "publish", "ServizioAntiCopieMultiple.exe")),
-        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Debug", "net10.0", "ServizioAntiCopieMultiple.exe")),
+        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Release", "net8.0-windows", "publish", "ServizioAntiCopieMultiple.exe")),
+        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Release", "net8.0-windows", "ServizioAntiCopieMultiple.exe")),
+        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Debug", "net8.0-windows", "publish", "ServizioAntiCopieMultiple.exe")),
+        Path.GetFullPath(Path.Combine(baseDir, "..", "ServizioAntiCopieMultiple", "bin", "Debug", "net8.0-windows", "ServizioAntiCopieMultiple.exe")),
         // Also check artifacts publish folder used by CI
         Path.GetFullPath(Path.Combine(baseDir, "..", "artifacts", "publish", "ServizioAntiCopieMultiple.exe")),
         Path.GetFullPath(Path.Combine(baseDir, "..", "..", "artifacts", "publish", "ServizioAntiCopieMultiple.exe"))
@@ -602,6 +492,10 @@ Dictionary<string, object> PromptPrintMonitorSettings()
     return settings;
 }
 
+// Try load language before showing UI
+LoadLanguageFromConfig();
+if (string.IsNullOrEmpty(Localizer.Language)) PromptLanguage();
+
 // Ensure elevated privileges at startup when possible
 EnsureElevated();
 
@@ -675,4 +569,110 @@ while (true)
 
     Console.WriteLine(Localizer.T("PressEnterToContinue"));
     Console.ReadLine();
+}
+
+static class Localizer
+{
+    public const string ServiceName = "ServizioAntiCopieMultiple";
+    public static string CurrentLanguage = "it";
+
+    private static string _lang = "it";
+    public static string Language { get => _lang; set { _lang = string.IsNullOrEmpty(value) ? "it" : value; } }
+    private static readonly Dictionary<string, Dictionary<string, string>> _map = new()
+    {
+        ["it"] = new Dictionary<string,string>
+        {
+            ["ToolTitle"] = "Servizio Anti Copie Multiple - Tool di gestione",
+            ["ServiceInstalled"] = "Servizio installato: {0}",
+            ["ServiceStatus"] = "Stato servizio: {0}",
+            ["CannotGetStatus"] = "Impossibile ottenere lo stato del servizio: {0}",
+            ["ChooseAction"] = "Scegli un'azione:",
+            ["InstallService"] = "1) Installa servizio",
+            ["UninstallService"] = "1) Disinstalla servizio",
+            ["StartService"] = "2) Avvia servizio come servizio di Windows",
+            ["StopService"] = "3) Ferma servizio",
+            ["RunConsole"] = "4) Esegui servizio in modalità console (--console) (utile per debug/diagnostica)",
+            ["ConfigureManual"] = "5) Configura impostazioni stampa manualmente",
+            ["Exit"] = "0) Esci",
+            ["NotAdminRetry"] = "Impossibile ottenere i privilegi elevati automaticamente. Avvia il tool come amministratore.",
+            ["InstallPromptExeNotFound"] = "Eseguibile del servizio non trovato automaticamente.",
+            ["InstallAskExePath"] = "Inserisci il percorso completo dell'eseguibile del servizio (o premi invio per annullare): ",
+            ["InstallExeNotSpecified"] = "Eseguibile non specificato o non trovato.",
+            ["EventLogCreateWarning"] = "Warning: impossibile creare la sorgente EventLog: {0}",
+            ["InstallSucceededAskConfigure"] = "Installazione riuscita. Vuoi configurare le impostazioni ora? (S/n): ",
+            ["ConfigSavedAt"] = "Configurazione salvata in: {0}",
+            ["InstallSuccess"] = "Installazione riuscita.",
+            ["InstallFailed"] = "Installazione fallita: {0}",
+            ["UninstallSuccess"] = "Disinstallazione riuscita.",
+            ["UninstallFailed"] = "Disinstallazione fallita: {0}",
+            ["StartSuccess"] = "Servizio avviato.",
+            ["StartFailed"] = "Avvio fallito: {0}",
+            ["StopSuccess"] = "Servizio fermato.",
+            ["StopFailed"] = "Arresto fallito: {0}",
+            ["RunConsoleStarted"] = "Servizio avviato in modalità console (PID {0}). Premi invio per terminare il processo e ritornare al menu.",
+            ["PressEnterToContinue"] = "Premi invio per continuare...",
+            ["PromptChoice"] = "Scelta: ",
+            ["ConfigMenuTitle"] = "Configurazione PrintMonitor (premi invio per usare il valore predefinito)",
+            ["EnableScannerPrompt"] = "Abilitare lo scanner in servizio?",
+            ["SaveNetDumpPrompt"] = "Salvare dump diagnostici per stampanti di rete?",
+            ["EnableNetCancelPrompt"] = "Consentire cancellazione automatica per stampanti di rete?",
+            ["ScanIntervalPrompt"] = "Intervallo scanner (secondi)",
+            ["JobAgePrompt"] = "Soglia età job (secondi)",
+            ["SigWindowPrompt"] = "Finestra signature (secondi)",
+            ["ConfigUpdated"] = "Configurazione aggiornata.",
+            ["LanguagePrompt"] = "Scegli lingua / Choose language: 1) Italiano 2) English (default Italiano): ",
+            ["LanguageSet"] = "Lingua impostata su: {0}"
+        },
+        ["en"] = new Dictionary<string,string>
+        {
+            ["ToolTitle"] = "Anti Multiple Copies Service - Management Tool",
+            ["ServiceInstalled"] = "Service installed: {0}",
+            ["ServiceStatus"] = "Service status: {0}",
+            ["CannotGetStatus"] = "Unable to get service status: {0}",
+            ["ChooseAction"] = "Choose an action:",
+            ["InstallService"] = "1) Install service",
+            ["UninstallService"] = "1) Uninstall service",
+            ["StartService"] = "2) Start service (Windows service)",
+            ["StopService"] = "3) Stop service",
+            ["RunConsole"] = "4) Run service in console mode (--console) (useful for debug)",
+            ["ConfigureManual"] = "5) Configure print settings manually",
+            ["Exit"] = "0) Exit",
+            ["NotAdminRetry"] = "Unable to automatically obtain elevated privileges. Run the tool as administrator.",
+            ["InstallPromptExeNotFound"] = "Service executable not found automatically.",
+            ["InstallAskExePath"] = "Enter full path to service executable (or press enter to cancel): ",
+            ["InstallExeNotSpecified"] = "Executable not specified or not found.",
+            ["EventLogCreateWarning"] = "Warning: unable to create EventLog source: {0}",
+            ["InstallSucceededAskConfigure"] = "Installation succeeded. Configure settings now? (Y/n): ",
+            ["ConfigSavedAt"] = "Configuration saved at: {0}",
+            ["InstallSuccess"] = "Installation succeeded.",
+            ["InstallFailed"] = "Installation failed: {0}",
+            ["UninstallSuccess"] = "Uninstallation succeeded.",
+            ["UninstallFailed"] = "Uninstallation failed: {0}",
+            ["StartSuccess"] = "Service started.",
+            ["StartFailed"] = "Start failed: {0}",
+            ["StopSuccess"] = "Service stopped.",
+            ["StopFailed"] = "Stop failed: {0}",
+            ["RunConsoleStarted"] = "Service started in console mode (PID {0}). Press Enter to stop the process and return to the menu.",
+            ["PressEnterToContinue"] = "Press Enter to continue...",
+            ["PromptChoice"] = "Choice: ",
+            ["ConfigMenuTitle"] = "PrintMonitor configuration (press enter to use default)",
+            ["EnableScannerPrompt"] = "Enable scanner in service?",
+            ["SaveNetDumpPrompt"] = "Save diagnostics dumps for network printers?",
+            ["EnableNetCancelPrompt"] = "Allow automatic cancellation for network printers?",
+            ["ScanIntervalPrompt"] = "Scanner interval (seconds)",
+            ["JobAgePrompt"] = "Job age threshold (seconds)",
+            ["SigWindowPrompt"] = "Signature window (seconds)",
+            ["ConfigUpdated"] = "Configuration updated.",
+            ["LanguagePrompt"] = "Choose language / Scegli lingua: 1) Italiano 2) English (default Italiano): ",
+            ["LanguageSet"] = "Language set to: {0}"
+        }
+    };
+
+    public static string T(string key)
+    {
+        var lang = _lang ?? "it";
+        if (_map.TryGetValue(lang, out var dict) && dict.TryGetValue(key, out var val)) return val;
+        if (_map.TryGetValue("it", out var def) && def.TryGetValue(key, out var dval)) return dval;
+        return key;
+    }
 }
