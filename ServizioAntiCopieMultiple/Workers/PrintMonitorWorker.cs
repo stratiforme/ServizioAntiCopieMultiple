@@ -613,7 +613,12 @@ namespace ServizioAntiCopieMultiple
 
         private void OnPrintJobArrived(object? sender, EventArrivedEventArgs e)
         {
-            try { _logger.LogDebug("OnPrintJobArrived invoked: EventClass={EventClass}, TimeCreated={Time}", e?.NewEvent?.ClassPath?.ClassName, e?.NewEvent?["TIME_CREATED"]); } catch { }
+            try
+            {
+                var ev = e.NewEvent;
+                try { _logger.LogDebug("OnPrintJobArrived invoked: EventClass={EventClass}, TimeCreated={Time}", ev?.ClassPath?.ClassName, ev?["TIME_CREATED"]); } catch { }
+            }
+            catch { }
 
             var target = (ManagementBaseObject?)e.NewEvent?["TargetInstance"];
             if (target == null)
@@ -971,53 +976,73 @@ namespace ServizioAntiCopieMultiple
 
         private void OnPrintJobOperationArrived(object? sender, EventArrivedEventArgs e)
         {
-            try { _logger.LogDebug("OnPrintJobOperationArrived invoked: EventClass={EventClass}, TimeCreated={Time}", e?.NewEvent?.ClassPath?.ClassName, e?.NewEvent?["TIME_CREATED"]); } catch { }
+            string? eventClass = null;
+            ManagementBaseObject? target = null;
 
-            var target = (ManagementBaseObject?)e.NewEvent?["TargetInstance"];
+            try
+            {
+                var ev = e.NewEvent;
+                eventClass = ev?.ClassPath?.ClassName;
+                try { _logger.LogDebug("OnPrintJobOperationArrived invoked: EventClass={EventClass}, TimeCreated={Time}", eventClass, ev?["TIME_CREATED"]); } catch { }
+
+                target = (ManagementBaseObject?)ev?["TargetInstance"];
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Error reading operation event metadata");
+            }
+
             if (target == null)
             {
                 _logger.LogWarning("Print job operation event arrived but TargetInstance was null");
                 return;
             }
 
-            // For creation and modification events, reuse existing handler logic
-            if (string.Equals(eventClass, "__InstanceCreationEvent", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(eventClass, "__InstanceModificationEvent", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                // Build minimal PrintJobInfo and process similarly to creation
-                string? name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
-                int copies = PrintJobParser.GetCopiesFromManagementObject(target);
-                var info = new PrintJobInfo
+                // For creation and modification events, reuse existing handler logic
+                if (string.Equals(eventClass, "__InstanceCreationEvent", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(eventClass, "__InstanceModificationEvent", StringComparison.OrdinalIgnoreCase))
                 {
-                    Name = name,
-                    Document = WmiHelper.GetPropertyValueSafe(target, "Document")?.ToString() ?? string.Empty,
-                    Owner = WmiHelper.GetPropertyValueSafe(target, "Owner")?.ToString() ?? string.Empty,
-                    Copies = copies,
-                    Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty
-                };
+                    // Build minimal PrintJobInfo and process similarly to creation
+                    string? name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
+                    int copies = PrintJobParser.GetCopiesFromManagementObject(target);
+                    var info = new PrintJobInfo
+                    {
+                        Name = name,
+                        Document = WmiHelper.GetPropertyValueSafe(target, "Document")?.ToString() ?? string.Empty,
+                        Owner = WmiHelper.GetPropertyValueSafe(target, "Owner")?.ToString() ?? string.Empty,
+                        Copies = copies,
+                        Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty
+                    };
 
-                // Log operation-level event
-                _logger.LogInformation("WMIPrintOpEventDetailed: Event={Event}, JobId={JobId}, Name={Name}, Copies={Copies}, Path={Path}", eventClass, PrintJobParser.ParseJobId(name), name ?? "<null>", copies, info.Path ?? "<empty>");
+                    // Log operation-level event
+                    _logger.LogInformation("WMIPrintOpEventDetailed: Event={Event}, JobId={JobId}, Name={Name}, Copies={Copies}, Path={Path}", eventClass, PrintJobParser.ParseJobId(name), name ?? "<null>", copies, info.Path ?? "<empty>");
 
-                // Save full TargetInstance dump for operation events as well
-                try
-                {
-                    SaveTargetDumpToFile(target, PrintJobParser.ParseJobId(name));
+                    // Save full TargetInstance dump for operation events as well
+                    try
+                    {
+                        SaveTargetDumpToFile(target, PrintJobParser.ParseJobId(name));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Failed to save TargetInstance dump (operation)");
+                    }
+
+                    if (info.Copies > 1)
+                    {
+                        ProcessPrintJobInfo(info);
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    _logger.LogDebug(ex, "Failed to save TargetInstance dump (operation)");
-                }
-
-                if (info.Copies > 1)
-                {
-                    ProcessPrintJobInfo(info);
+                    // Other operation events (e.g. deletion) are useful to log for diagnostics but not processed
+                    _logger.LogInformation("WMIPrintOpEventIgnored: Event={EventClass} for print job (no processing performed)", eventClass);
                 }
             }
-            else
+            catch (Exception ex)
             {
-                // Other operation events (e.g. deletion) are useful to log for diagnostics but not processed
-                _logger.LogInformation("WMIPrintOpEventIgnored: Event={EventClass} for print job (no processing performed)", eventClass);
+                _logger.LogError(ex, "Error processing print job operation event");
             }
         }
 
