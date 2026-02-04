@@ -741,22 +741,25 @@ namespace ServizioAntiCopieMultiple
                 }
 
                 // 3) Aggregate recent events (signature heuristic)
-                try
-                {
-                    string printer = !string.IsNullOrEmpty(name) ? (name.LastIndexOf(',') >= 0 ? name.Substring(0, name.LastIndexOf(',')).Trim() : name) : string.Empty;
-                    string signature = string.Join("|", printer, document ?? string.Empty, owner ?? string.Empty);
-                    long now = DateTime.UtcNow.Ticks;
-                    var queue = _recentJobSignatures.GetOrAdd(signature, _ => new ConcurrentQueue<long>());
-                    queue.Enqueue(now);
-                    while (queue.TryPeek(out long t) && TimeSpan.FromTicks(now - t) > _signatureWindow) queue.TryDequeue(out _);
-                    int recentCount = queue.Count;
-                    if (recentCount > copies)
-                    {
-                        _logger.LogInformation("InferredCopies: increased copies from {Old} to {New} based on {Count} recent events for signature {Sig}", copies, recentCount, recentCount, signature);
-                        copies = recentCount;
-                    }
-                }
-                catch (Exception ex) { _logger.LogDebug(ex, "Failed inferring copies from recent signatures"); }
+                // NOTA: La signature heuristic è DISABILITATA perché conta gli eventi WMI errati
+                // Esempio: 3 copie = 28 eventi WMI = 28 "copie" rilevate (SBAGLIATO!)
+                // Usiamo solo il parsing diretto delle copie da WMI/DEVMODE/PrintTicket
+                // try
+                // {
+                //     string printer = !string.IsNullOrEmpty(name) ? (name.LastIndexOf(',') >= 0 ? name.Substring(0, name.LastIndexOf(',')).Trim() : name) : string.Empty;
+                //     string signature = string.Join("|", printer, document ?? string.Empty, owner ?? string.Empty);
+                //     long now = DateTime.UtcNow.Ticks;
+                //     var queue = _recentJobSignatures.GetOrAdd(signature, _ => new ConcurrentQueue<long>());
+                //     queue.Enqueue(now);
+                //     while (queue.TryPeek(out long t) && TimeSpan.FromTicks(now - t) > _signatureWindow) queue.TryDequeue(out _);
+                //     int recentCount = queue.Count;
+                //     if (recentCount > copies)
+                //     {
+                //         _logger.LogInformation("InferredCopies: increased copies from {Old} to {New} based on {Count} recent events for signature {Sig}", copies, recentCount, recentCount, signature);
+                //         copies = recentCount;
+                //     }
+                // }
+                // catch (Exception ex) { _logger.LogDebug(ex, "Failed inferring copies from recent signatures"); }
 
                 // Log received event at Information level so events are visible in logs even when Copies == 1
                 try
