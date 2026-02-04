@@ -865,6 +865,16 @@ namespace ServizioAntiCopieMultiple
             _logger.LogInformation("DetectedMultiCopyPrintJob: JobId={JobId}, Document={Document}, Owner={Owner}, Copies={Copies}", jobId, info.Document, info.Owner, info.Copies);
             _logger.LogInformation("NotificationSent: Notification sent to user for job {JobId}", jobId);
 
+            // Send UI notification to user
+            try
+            {
+                NotificationHelper.NotifyMultipleCopiesDetected(jobId, info.Document, info.Owner, info.Copies, _logger);
+            }
+            catch (Exception notifEx)
+            {
+                _logger.LogDebug(notifEx, "Failed to send notification for job {JobId}", jobId);
+            }
+
             try
             {
                 string expectedFileName = jobId + ".ok";
