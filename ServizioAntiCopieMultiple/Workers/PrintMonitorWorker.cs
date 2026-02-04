@@ -154,10 +154,14 @@ namespace ServizioAntiCopieMultiple
                 _ = Task.Run(async () => await EnsureWmiWatcherAsync(stoppingToken).ConfigureAwait(false));
 
                 // Start periodic queue scanner fallback only when interactive or explicitly enabled
-                if (Environment.UserInteractive || _enableScanner)
+                var forceScannerEnv = Environment.GetEnvironmentVariable("SACM_FORCE_ENABLE_SCANNER");
+                bool forceScanner = string.Equals(forceScannerEnv, "true", StringComparison.OrdinalIgnoreCase);
+                if (Environment.UserInteractive || _enableScanner || forceScanner)
                 {
                     _ = Task.Run(async () => await QueueScannerLoop(stoppingToken).ConfigureAwait(false));
                     _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("QueueScannerStarted"), Environment.UserInteractive, _enableScanner);
+                    if (forceScanner)
+                        _logger.LogInformation("QueueScannerForcedByEnv: Queue scanner forced by SACM_FORCE_ENABLE_SCANNER environment variable");
                 }
                 else
                 {
@@ -609,198 +613,182 @@ namespace ServizioAntiCopieMultiple
 
         private void OnPrintJobArrived(object? sender, EventArrivedEventArgs e)
         {
+            try { _logger.LogDebug("OnPrintJobArrived invoked: EventClass={EventClass}, TimeCreated={Time}", e?.NewEvent?.ClassPath?.ClassName, e?.NewEvent?["TIME_CREATED"]); } catch { }
+
+            var target = (ManagementBaseObject?)e.NewEvent?["TargetInstance"];
+            if (target == null)
+            {
+                _logger.LogWarning(ServizioAntiCopieMultiple.Helpers.Localizer.T("TargetInstanceNull"));
+                return;
+            }
+
+            // Dump all properties for debugging
             try
             {
-                try
-                {
-                    var ev = e.NewEvent;
-                    if (_logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
-                        _logger.LogDebug(ServizioAntiCopieMultiple.Helpers.Localizer.T("WMIEventArrived"), ev?.ClassPath?.ClassName, ev?["TIME_CREATED"]);
-                }
-                catch (Exception diagEx)
-                {
-                    _logger.LogDebug(diagEx, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedReadEventMetadata"));
-                }
-
-                var target = (ManagementBaseObject?)e.NewEvent?["TargetInstance"];
-                if (target == null)
-                {
-                    _logger.LogWarning(ServizioAntiCopieMultiple.Helpers.Localizer.T("TargetInstanceNull"));
-                    return;
-                }
-
-                // Dump all properties for debugging
-                try
-                {
-                    DumpTargetProperties(target);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedDumpTargetProperties"));
-                }
-
-                // Read WMI properties using shared helper to avoid ManagementException when a property is missing
-                string? name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
-                string document = WmiHelper.GetPropertyValueSafe(target, "Document")?.ToString() ?? string.Empty;
-                string owner = WmiHelper.GetPropertyValueSafe(target, "Owner")?.ToString() ?? string.Empty;
-
-                try
-                {
-                    if (_logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
-                    {
-                        string path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty;
-                        _logger.LogDebug(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintJobProperties"), name, document, owner, path);
-                    }
-                }
-                catch (Exception dbgEx)
-                {
-                    _logger.LogDebug(dbgEx, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedReadEventMetadata"));
-                }
-
-                string jobId = PrintJobParser.ParseJobId(name);
-                int copies = PrintJobParser.GetCopiesFromManagementObject(target);
-
-                // Try native DEVMODE/GetJob
-                if (copies <= 1)
-                {
-                    try
-                    {
-                        var native = NativeSpool.TryGetCopiesFromW32Job(name, out var nativeDebug);
-                        if (!string.IsNullOrEmpty(nativeDebug) && _logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
-                        {
-                            _logger.LogDebug(ServizioAntiCopieMultiple.Helpers.Localizer.T("NativeSpoolDebug"), nativeDebug);
-
-                            try
-                            {
-                                // Save native spool debug to diagnostics for offline analysis
-                                string nsFile = Path.Combine(_diagnosticsDir, $"nativespool_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.log");
-                                File.WriteAllText(nsFile, nativeDebug);
-                                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("NativeSpoolSaved"), nsFile);
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedSaveNativeSpool"));
-                            }
-                        }
-
-                        if (native.HasValue && native.Value > copies)
-                        {
-                            _logger.LogInformation("DEVMODECopiesDetected: increased copies from {Old} to {New} for job {JobId}", copies, native.Value, jobId);
-                            copies = native.Value;
-                        }
-                    }
-                    catch (Exception ex) { _logger.LogDebug(ex, "DEVMODE detection failed for job {JobId}", jobId); }
-                }
-
-                // 2) Try PrintTicket XML (safe access)
-                if (copies <= 1)
-                {
-                    try
-                    {
-                        object? ptObj = null;
-                        foreach (var pname in new[] { "PrintTicket", "PrintTicketXML", "PrintTicketData" })
-                        {
-                            ptObj = WmiHelper.GetPropertyValueSafe(target, pname);
-                            if (ptObj != null) break;
-                        }
-
-                        if (ptObj != null)
-                        {
-                            string ptXml = ptObj.ToString() ?? string.Empty;
-
-                            // Save print ticket to diagnostics for deeper analysis
-                            try
-                            {
-                                if (!string.IsNullOrEmpty(ptXml))
-                                {
-                                    string ptFile = Path.Combine(_diagnosticsDir, $"printticket_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.xml");
-                                    File.WriteAllText(ptFile, ptXml);
-                                    _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintTicketSaved"), ptFile);
-
-                                    var parsed = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
-                                    if (parsed.HasValue)
-                                    {
-                                        _logger.LogDebug("PrintTicketParser: parsed copies={Copies} from PrintTicket for job {JobId}", parsed.Value, jobId);
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogDebug(ex, "Failed saving PrintTicket XML for diagnostics");
-                            }
-
-                            var parsed2 = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
-                            if (parsed2.HasValue && parsed2.Value > copies)
-                            {
-                                _logger.LogInformation("PrintTicketCopiesDetected: increased copies from {Old} to {New} for job {JobId}", copies, parsed2.Value, jobId);
-                                copies = parsed2.Value;
-                            }
-                        }
-                    }
-                    catch (Exception ex) { _logger.LogDebug(ex, "PrintTicket detection failed for job {JobId}", jobId); }
-                }
-
-                // 3) Aggregate recent events (signature heuristic)
-                // NOTA: La signature heuristic è DISABILITATA perché conta gli eventi WMI errati
-                // Esempio: 3 copie = 28 eventi WMI = 28 "copie" rilevate (SBAGLIATO!)
-                // Usiamo solo il parsing diretto delle copie da WMI/DEVMODE/PrintTicket
-                // try
-                // {
-                //     string printer = !string.IsNullOrEmpty(name) ? (name.LastIndexOf(',') >= 0 ? name.Substring(0, name.LastIndexOf(',')).Trim() : name) : string.Empty;
-                //     string signature = string.Join("|", printer, document ?? string.Empty, owner ?? string.Empty);
-                //     long now = DateTime.UtcNow.Ticks;
-                //     var queue = _recentJobSignatures.GetOrAdd(signature, _ => new ConcurrentQueue<long>());
-                //     queue.Enqueue(now);
-                //     while (queue.TryPeek(out long t) && TimeSpan.FromTicks(now - t) > _signatureWindow) queue.TryDequeue(out _);
-                //     int recentCount = queue.Count;
-                //     if (recentCount > copies)
-                //     {
-                //         _logger.LogInformation("InferredCopies: increased copies from {Old} to {New} based on {Count} recent events for signature {Sig}", copies, recentCount, recentCount, signature);
-                //         copies = recentCount;
-                //     }
-                // }
-                // catch (Exception ex) { _logger.LogDebug(ex, "Failed inferring copies from recent signatures"); }
-
-                // Log received event at Information level so events are visible in logs even when Copies == 1
-                try
-                {
-                    string wmiPath = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty;
-                    _logger.LogInformation("WMIPrintEvent: JobId={JobId}, Name={Name}, Document={Document}, Owner={Owner}, Copies={Copies}, Path={Path}", jobId, name ?? "<null>", document, owner, copies, string.IsNullOrEmpty(wmiPath) ? "<empty>" : wmiPath);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Failed to log WMIPrintEvent basic info");
-                }
-
-                // Save full TargetInstance dump to diagnostics for offline analysis
-                try
-                {
-                    SaveTargetDumpToFile(target, jobId);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedSaveTargetDump"));
-                }
-
-                // Build PrintJobInfo and hand off to common processor
-                var info = new PrintJobInfo
-                {
-                    Name = name, // nullable allowed
-                    Document = document ?? string.Empty,
-                    Owner = owner ?? string.Empty,
-                    Copies = copies,
-                    Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty,
-                    HostPrintQueue = WmiHelper.GetPropertyValueSafe(target, "HostPrintQueue")?.ToString() ?? string.Empty
-                };
-
-                if (info.Copies > 1)
-                {
-                    ProcessPrintJobInfo(info);
-                }
+                DumpTargetProperties(target);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing print job event");
+                _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedDumpTargetProperties"));
+            }
+
+            // Read WMI properties using shared helper to avoid ManagementException when a property is missing
+            string? name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
+            string document = WmiHelper.GetPropertyValueSafe(target, "Document")?.ToString() ?? string.Empty;
+            string owner = WmiHelper.GetPropertyValueSafe(target, "Owner")?.ToString() ?? string.Empty;
+
+            try
+            {
+                if (_logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
+                {
+                    string path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty;
+                    _logger.LogDebug(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintJobProperties"), name, document, owner, path);
+                }
+            }
+            catch (Exception dbgEx)
+            {
+                _logger.LogDebug(dbgEx, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedReadEventMetadata"));
+            }
+
+            string jobId = PrintJobParser.ParseJobId(name);
+            int copies = PrintJobParser.GetCopiesFromManagementObject(target);
+
+            // Try native DEVMODE/GetJob
+            if (copies <= 1)
+            {
+                try
+                {
+                    var native = NativeSpool.TryGetCopiesFromW32Job(name, out var nativeDebug);
+                    if (!string.IsNullOrEmpty(nativeDebug) && _logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
+                    {
+                        _logger.LogDebug(ServizioAntiCopieMultiple.Helpers.Localizer.T("NativeSpoolDebug"), nativeDebug);
+
+                        try
+                        {
+                            // Save native spool debug to diagnostics for offline analysis
+                            string nsFile = Path.Combine(_diagnosticsDir, $"nativespool_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.log");
+                            File.WriteAllText(nsFile, nativeDebug);
+                            _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("NativeSpoolSaved"), nsFile);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedSaveNativeSpool"));
+                        }
+                    }
+
+                    if (native.HasValue && native.Value > copies)
+                    {
+                        _logger.LogInformation("DEVMODECopiesDetected: increased copies from {Old} to {New} for job {JobId}", copies, native.Value, jobId);
+                        copies = native.Value;
+                    }
+                }
+                catch (Exception ex) { _logger.LogDebug(ex, "DEVMODE detection failed for job {JobId}", jobId); }
+            }
+
+            // 2) Try PrintTicket XML (safe access)
+            if (copies <= 1)
+            {
+                try
+                {
+                    object? ptObj = null;
+                    foreach (var pname in new[] { "PrintTicket", "PrintTicketXML", "PrintTicketData" })
+                    {
+                        ptObj = WmiHelper.GetPropertyValueSafe(target, pname);
+                        if (ptObj != null) break;
+                    }
+
+                    if (ptObj != null)
+                    {
+                        string ptXml = ptObj.ToString() ?? string.Empty;
+
+                        // Save print ticket to diagnostics for deeper analysis
+                        try
+                        {
+                            if (!string.IsNullOrEmpty(ptXml))
+                            {
+                                string ptFile = Path.Combine(_diagnosticsDir, $"printticket_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{jobId}.xml");
+                                File.WriteAllText(ptFile, ptXml);
+                                _logger.LogInformation(ServizioAntiCopieMultiple.Helpers.Localizer.T("PrintTicketSaved"), ptFile);
+
+                                var parsed = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
+                                if (parsed.HasValue)
+                                {
+                                    _logger.LogDebug("PrintTicketParser: parsed copies={Copies} from PrintTicket for job {JobId}", parsed.Value, jobId);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(ex, "Failed saving PrintTicket XML for diagnostics");
+                        }
+
+                        var parsed2 = PrintTicketUtils.TryParseCopiesFromXml(ptXml);
+                        if (parsed2.HasValue && parsed2.Value > copies)
+                        {
+                            _logger.LogInformation("PrintTicketCopiesDetected: increased copies from {Old} to {New} for job {JobId}", copies, parsed2.Value, jobId);
+                            copies = parsed2.Value;
+                        }
+                    }
+                }
+                catch (Exception ex) { _logger.LogDebug(ex, "PrintTicket detection failed for job {JobId}", jobId); }
+            }
+
+            // 3) Aggregate recent events (signature heuristic)
+            // NOTA: La signature heuristic è DISABILITATA perché conta gli eventi WMI errati
+            // Esempio: 3 copie = 28 eventi WMI = 28 "copie" rilevate (SBAGLIATO!)
+            // Usiamo solo il parsing diretto delle copie da WMI/DEVMODE/PrintTicket
+            // try
+            // {
+            //     string printer = !string.IsNullOrEmpty(name) ? (name.LastIndexOf(',') >= 0 ? name.Substring(0, name.LastIndexOf(',')).Trim() : name) : string.Empty;
+            //     string signature = string.Join("|", printer, document ?? string.Empty, owner ?? string.Empty);
+            //     long now = DateTime.UtcNow.Ticks;
+            //     var queue = _recentJobSignatures.GetOrAdd(signature, _ => new ConcurrentQueue<long>());
+            //     queue.Enqueue(now);
+            //     while (queue.TryPeek(out long t) && TimeSpan.FromTicks(now - t) > _signatureWindow) queue.TryDequeue(out _);
+            //     int recentCount = queue.Count;
+            //     if (recentCount > copies)
+            //     {
+            //         _logger.LogInformation("InferredCopies: increased copies from {Old} to {New} based on {Count} recent events for signature {Sig}", copies, recentCount, recentCount, signature);
+            //         copies = recentCount;
+            //     }
+            // }
+            // catch (Exception ex) { _logger.LogDebug(ex, "Failed inferring copies from recent signatures"); }
+
+            // Log received event at Information level so events are visible in logs even when Copies == 1
+            try
+            {
+                string wmiPath = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty;
+                _logger.LogInformation("WMIPrintEvent: JobId={JobId}, Name={Name}, Document={Document}, Owner={Owner}, Copies={Copies}, Path={Path}", jobId, name ?? "<null>", document, owner, copies, string.IsNullOrEmpty(wmiPath) ? "<empty>" : wmiPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to log WMIPrintEvent basic info");
+            }
+
+            // Save full TargetInstance dump to diagnostics for offline analysis
+            try
+            {
+                SaveTargetDumpToFile(target, jobId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, ServizioAntiCopieMultiple.Helpers.Localizer.T("FailedSaveTargetDump"));
+            }
+
+            // Build PrintJobInfo and hand off to common processor
+            var info = new PrintJobInfo
+            {
+                Name = name, // nullable allowed
+                Document = document ?? string.Empty,
+                Owner = owner ?? string.Empty,
+                Copies = copies,
+                Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty,
+                HostPrintQueue = WmiHelper.GetPropertyValueSafe(target, "HostPrintQueue")?.ToString() ?? string.Empty
+            };
+
+            if (info.Copies > 1)
+            {
+                ProcessPrintJobInfo(info);
             }
         }
 
@@ -983,62 +971,53 @@ namespace ServizioAntiCopieMultiple
 
         private void OnPrintJobOperationArrived(object? sender, EventArrivedEventArgs e)
         {
-            try
+            try { _logger.LogDebug("OnPrintJobOperationArrived invoked: EventClass={EventClass}, TimeCreated={Time}", e?.NewEvent?.ClassPath?.ClassName, e?.NewEvent?["TIME_CREATED"]); } catch { }
+
+            var target = (ManagementBaseObject?)e.NewEvent?["TargetInstance"];
+            if (target == null)
             {
-                var ev = e.NewEvent;
-                string? eventClass = ev?.ClassPath?.ClassName;
-                _logger.LogInformation("WMIPrintOpEvent: EventClass={EventClass}, TimeGenerated={Time}", eventClass, ev?["TIME_CREATED"]);
+                _logger.LogWarning("Print job operation event arrived but TargetInstance was null");
+                return;
+            }
 
-                var target = (ManagementBaseObject?)e.NewEvent?["TargetInstance"];
-                if (target == null)
+            // For creation and modification events, reuse existing handler logic
+            if (string.Equals(eventClass, "__InstanceCreationEvent", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(eventClass, "__InstanceModificationEvent", StringComparison.OrdinalIgnoreCase))
+            {
+                // Build minimal PrintJobInfo and process similarly to creation
+                string? name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
+                int copies = PrintJobParser.GetCopiesFromManagementObject(target);
+                var info = new PrintJobInfo
                 {
-                    _logger.LogWarning("Print job operation event arrived but TargetInstance was null");
-                    return;
+                    Name = name,
+                    Document = WmiHelper.GetPropertyValueSafe(target, "Document")?.ToString() ?? string.Empty,
+                    Owner = WmiHelper.GetPropertyValueSafe(target, "Owner")?.ToString() ?? string.Empty,
+                    Copies = copies,
+                    Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty
+                };
+
+                // Log operation-level event
+                _logger.LogInformation("WMIPrintOpEventDetailed: Event={Event}, JobId={JobId}, Name={Name}, Copies={Copies}, Path={Path}", eventClass, PrintJobParser.ParseJobId(name), name ?? "<null>", copies, info.Path ?? "<empty>");
+
+                // Save full TargetInstance dump for operation events as well
+                try
+                {
+                    SaveTargetDumpToFile(target, PrintJobParser.ParseJobId(name));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to save TargetInstance dump (operation)");
                 }
 
-                // For creation and modification events, reuse existing handler logic
-                if (string.Equals(eventClass, "__InstanceCreationEvent", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(eventClass, "__InstanceModificationEvent", StringComparison.OrdinalIgnoreCase))
+                if (info.Copies > 1)
                 {
-                    // Build minimal PrintJobInfo and process similarly to creation
-                    string? name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
-                    int copies = PrintJobParser.GetCopiesFromManagementObject(target);
-                    var info = new PrintJobInfo
-                    {
-                        Name = name,
-                        Document = WmiHelper.GetPropertyValueSafe(target, "Document")?.ToString() ?? string.Empty,
-                        Owner = WmiHelper.GetPropertyValueSafe(target, "Owner")?.ToString() ?? string.Empty,
-                        Copies = copies,
-                        Path = WmiHelper.GetPropertyValueSafe(target, "__PATH")?.ToString() ?? string.Empty
-                    };
-
-                    // Log operation-level event
-                    _logger.LogInformation("WMIPrintOpEventDetailed: Event={Event}, JobId={JobId}, Name={Name}, Copies={Copies}, Path={Path}", eventClass, PrintJobParser.ParseJobId(name), name ?? "<null>", copies, info.Path ?? "<empty>");
-
-                    // Save full TargetInstance dump for operation events as well
-                    try
-                    {
-                        SaveTargetDumpToFile(target, PrintJobParser.ParseJobId(name));
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDebug(ex, "Failed to save TargetInstance dump (operation)");
-                    }
-
-                    if (info.Copies > 1)
-                    {
-                        ProcessPrintJobInfo(info);
-                    }
-                }
-                else
-                {
-                    // Other operation events (e.g. deletion) are useful to log for diagnostics but not processed
-                    _logger.LogInformation("WMIPrintOpEventIgnored: Event={EventClass} for print job (no processing performed)", eventClass);
+                    ProcessPrintJobInfo(info);
                 }
             }
-            catch (Exception ex)
+            else
             {
-                _logger.LogError(ex, "Error processing print job operation event");
+                // Other operation events (e.g. deletion) are useful to log for diagnostics but not processed
+                _logger.LogInformation("WMIPrintOpEventIgnored: Event={EventClass} for print job (no processing performed)", eventClass);
             }
         }
 
