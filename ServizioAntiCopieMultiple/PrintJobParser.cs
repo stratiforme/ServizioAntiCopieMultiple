@@ -145,6 +145,9 @@ namespace ServizioAntiCopieMultiple
             jobId = 0;
             try
             {
+                if (target == null)
+                    return false;
+
                 var name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
                 if (string.IsNullOrEmpty(name)) return false;
                 var parsed = ParseJobId(name);

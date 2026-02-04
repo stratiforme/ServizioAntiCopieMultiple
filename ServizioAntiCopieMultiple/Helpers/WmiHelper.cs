@@ -5,7 +5,7 @@ namespace ServizioAntiCopieMultiple.Helpers
 {
     internal static class WmiHelper
     {
-        public static object? GetPropertyValueSafe(ManagementBaseObject target, string propertyName)
+        public static object? GetPropertyValueSafe(ManagementBaseObject? target, string propertyName)
         {
             if (target == null) return null;
             try
