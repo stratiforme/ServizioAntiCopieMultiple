@@ -12,6 +12,8 @@ namespace ServizioAntiCopieMultiple
     {
         private static readonly Regex _copiesRegex = new Regex(@",\s*(\d+)\s*$", RegexOptions.Compiled);
         private static readonly Regex _trailingNumberRegex = new Regex(@"(\d+)\s*$", RegexOptions.Compiled);
+        private static readonly Regex _xCopiesRegex = new Regex(@"(\d+)\s*[x×]\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex _parenCopiesRegex = new Regex(@"\((\d+)\s*(copie|copies|copy)\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         public static string ParseJobId(string? name)
         {
@@ -84,9 +86,28 @@ namespace ServizioAntiCopieMultiple
                 if (copiesObj != null)
                 {
                     if (copiesObj is int ci)
-                        return ci;
-                    if (int.TryParse(copiesObj.ToString(), out var parsed))
-                        return parsed;
+                    {
+                        // Sanity: if Copies equals parsed JobId, skip (driver bug)
+                        if (TryGetJobIdFromTarget(target, out var jid) && ci == jid)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Ignoring Copies value equal to JobId ({ci}) - possible driver bug");
+                        }
+                        else
+                        {
+                            return ci;
+                        }
+                    }
+                    else if (int.TryParse(copiesObj.ToString(), out var parsed))
+                    {
+                        if (TryGetJobIdFromTarget(target, out var jid) && parsed == jid)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Ignoring Copies value equal to JobId ({parsed}) - possible driver bug");
+                        }
+                        else
+                        {
+                            return parsed;
+                        }
+                    }
                 }
 
                 int totalPages = GetIntPropertyValue(target, "TotalPages");
@@ -105,6 +126,8 @@ namespace ServizioAntiCopieMultiple
                 if (ptCopies.HasValue && ptCopies.Value > 0)
                     return ptCopies.Value;
 
+                // Do NOT use the Name property fallback in case it is the printer name with job id ("Printer, 123").
+                // Only use Name parsing when it contains explicit copy indicators ("3x", "(3 copie)", "copies").
                 int? nameCopies = TryParseNameProperty(target);
                 if (nameCopies.HasValue)
                     return nameCopies.Value;
@@ -115,6 +138,24 @@ namespace ServizioAntiCopieMultiple
             }
 
             return 1;
+        }
+
+        private static bool TryGetJobIdFromTarget(ManagementBaseObject? target, out int jobId)
+        {
+            jobId = 0;
+            try
+            {
+                var name = WmiHelper.GetPropertyValueSafe(target, "Name")?.ToString();
+                if (string.IsNullOrEmpty(name)) return false;
+                var parsed = ParseJobId(name);
+                if (int.TryParse(parsed, out var j))
+                {
+                    jobId = j;
+                    return true;
+                }
+            }
+            catch { }
+            return false;
         }
 
         private static int GetIntPropertyValue(ManagementBaseObject? target, string propertyName)
@@ -216,13 +257,27 @@ namespace ServizioAntiCopieMultiple
             if (string.IsNullOrEmpty(input))
                 return null;
 
-            var m = _copiesRegex.Match(input);
-            if (m.Success && int.TryParse(m.Groups[1].Value, out var fromName) && fromName > 0)
-                return fromName;
+            // 1) Look for explicit formats like "3x" or "3 x" (common UI shorthand)
+            var mX = _xCopiesRegex.Match(input);
+            if (mX.Success && int.TryParse(mX.Groups[1].Value, out var xVal) && xVal > 0)
+                return xVal;
 
-            var m2 = _trailingNumberRegex.Match(input);
-            if (m2.Success && int.TryParse(m2.Groups[1].Value, out var fromName2) && fromName2 > 0)
-                return fromName2;
+            // 2) Look for parenthesis forms like "(3 copie)" or "(3 copies)"
+            var mParen = _parenCopiesRegex.Match(input);
+            if (mParen.Success && int.TryParse(mParen.Groups[1].Value, out var pVal) && pVal > 0)
+                return pVal;
+
+            // 3) Only if the string contains copy-related keywords, consider trailing-number heuristics
+            if (input.IndexOf("cop", StringComparison.OrdinalIgnoreCase) >= 0 || input.IndexOf("copy", StringComparison.OrdinalIgnoreCase) >= 0 || input.IndexOf("x", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                var m = _copiesRegex.Match(input);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out var fromName) && fromName > 0)
+                    return fromName;
+
+                var m2 = _trailingNumberRegex.Match(input);
+                if (m2.Success && int.TryParse(m2.Groups[1].Value, out var fromName2) && fromName2 > 0)
+                    return fromName2;
+            }
 
             return null;
         }
