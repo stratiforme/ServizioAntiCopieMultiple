@@ -54,12 +54,23 @@ bool forceConsole = false;
 var envConsole = Environment.GetEnvironmentVariable("SACM_ENABLE_CONSOLE");
 if (!string.IsNullOrWhiteSpace(envConsole) && bool.TryParse(envConsole, out var cval)) forceConsole = cval;
 
+// Always ensure file logging is enabled for diagnostics
+bool ensureFileLogging = true;
+var envFileLogging = Environment.GetEnvironmentVariable("SACM_DISABLE_FILE_LOGGING");
+if (!string.IsNullOrWhiteSpace(envFileLogging) && bool.TryParse(envFileLogging, out var fval)) ensureFileLogging = !fval;
+
 // Configure Serilog
 var loggerConfig = new LoggerConfiguration()
     .MinimumLevel.Is(defaultLevel)
-    .Enrich.FromLogContext()
-    .WriteTo.File(logFilePath, rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14);
+    .Enrich.FromLogContext();
 
+// File logging is always enabled (for diagnostics), unless explicitly disabled
+if (ensureFileLogging)
+{
+    loggerConfig = loggerConfig.WriteTo.File(logFilePath, rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14);
+}
+
+// Console logging based on interactive mode or force flag
 if (!runAsService || forceConsole)
 {
     // add console sink for interactive debugging

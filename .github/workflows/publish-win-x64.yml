@@ -43,11 +43,6 @@ jobs:
       - name: Create combined ZIP with executables at root
         if: always()
         run: |
-          powershell -NoLogo -NoProfile -Command "Push-Location '${{ github.workspace }}\publish\win-x64'; Compress-Archive -Path * -DestinationPath '${{ github.workspace }}\publish\apps-win-x64.zip' -Force; Pop-Location"
-
-      - name: Upload combined ZIP artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: apps-win-x64-zip
-          path: publish/apps-win-x64.zip
+          cd "${{ github.workspace }}\publish\win-x64"
+          # Get all files (not directories) and zip them directly at root level
+          powershell -NoLogo -NoProfile -Command "Get-ChildItem -File | Compress-Archive -DestinationPath '${{ github.workspace }}\publish\apps-win-x64.zip' -Force"
