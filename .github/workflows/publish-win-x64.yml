@@ -43,6 +43,13 @@ jobs:
       - name: Create combined ZIP with executables at root
         if: always()
         run: |
-          cd "${{ github.workspace }}\publish\win-x64"
-          # Get all files (not directories) and zip them directly at root level
-          powershell -NoLogo -NoProfile -Command "Get-ChildItem -File | Compress-Archive -DestinationPath '${{ github.workspace }}\publish\apps-win-x64.zip' -Force"
+          powershell -NoLogo -NoProfile -Command @"
+            Set-Location '${{ github.workspace }}\publish\win-x64'
+            `$files = @(Get-ChildItem -File | ForEach-Object { `$_.FullName })
+            if (`$files.Count -gt 0) {
+              Compress-Archive -Path `$files -DestinationPath '${{ github.workspace }}\publish\apps-win-x64.zip' -Force
+              Write-Host "ZIP created successfully with `$(`$files.Count) files"
+            } else {
+              Write-Host "No files found to zip"
+            }
+          "@
