@@ -53,3 +53,12 @@ jobs:
               Write-Host "No files found to zip"
             }
           "@
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apps-win-x64
+          path: ${{ github.workspace }}/publish/apps-win-x64.zip
+          retention-days: 30
+          if-no-files-found: warn
