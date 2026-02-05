@@ -1241,7 +1241,28 @@ namespace ServizioAntiCopieMultiple
                 public short dmPaperWidth;
                 public short dmScale;
                 public short dmCopies;
-                // rest omitted
+                public short dmDefaultSource;
+                public short dmPrintQuality;
+                public short dmColor;
+                public short dmDuplex;
+                public short dmYResolution;
+                public short dmTTOption;
+                public short dmCollate;
+                [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+                public short dmLogPixels;
+                public int dmBitsPerPel;
+                public int dmPelsWidth;
+                public int dmPelsHeight;
+                public int dmDisplayFlags;
+                public int dmDisplayFrequency;
+                public int dmICMMethod;
+                public int dmICMIntent;
+                public int dmMediaType;
+                public int dmDitherType;
+                public int dmReserved1;
+                public int dmReserved2;
+                public int dmPanningWidth;
+                public int dmPanningHeight;
             }
 
             [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
