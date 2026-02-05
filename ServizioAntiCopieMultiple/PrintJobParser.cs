@@ -83,6 +83,8 @@ namespace ServizioAntiCopieMultiple
             try
             {
                 var copiesObj = WmiHelper.GetPropertyValueSafe(target, "Copies");
+                System.Diagnostics.Debug.WriteLine($"[ParseDebug] Copies property: {copiesObj}");
+                
                 if (copiesObj != null)
                 {
                     if (copiesObj is int ci)
@@ -94,6 +96,7 @@ namespace ServizioAntiCopieMultiple
                         }
                         else
                         {
+                            System.Diagnostics.Debug.WriteLine($"[ParseDebug] Returning Copies from property: {ci}");
                             return ci;
                         }
                     }
@@ -105,6 +108,7 @@ namespace ServizioAntiCopieMultiple
                         }
                         else
                         {
+                            System.Diagnostics.Debug.WriteLine($"[ParseDebug] Returning parsed Copies: {parsed}");
                             return parsed;
                         }
                     }
@@ -113,24 +117,35 @@ namespace ServizioAntiCopieMultiple
                 int totalPages = GetIntPropertyValue(target, "TotalPages");
                 int pagesPerDoc = GetPagesPerDoc(target);
 
+                System.Diagnostics.Debug.WriteLine($"[ParseDebug] TotalPages={totalPages}, PagesPerDoc={pagesPerDoc}");
+
                 if (pagesPerDoc > 0 && totalPages > 0)
                 {
                     int inferred = Math.Max(1, (totalPages + pagesPerDoc - 1) / pagesPerDoc);
+                    System.Diagnostics.Debug.WriteLine($"[ParseDebug] Inferred copies from pages: {inferred}");
                     return inferred;
                 }
 
                 if (totalPages > 1)
-                    return Math.Min(totalPages, 1000);
+                {
+                    int result = Math.Min(totalPages, 1000);
+                    System.Diagnostics.Debug.WriteLine($"[ParseDebug] Using TotalPages as copies: {result}");
+                    return result;
+                }
 
                 int? ptCopies = TryParsePrintTicket(target);
+                System.Diagnostics.Debug.WriteLine($"[ParseDebug] PrintTicket copies: {(ptCopies.HasValue ? ptCopies.Value : "null")}");
                 if (ptCopies.HasValue && ptCopies.Value > 0)
                     return ptCopies.Value;
 
                 // Do NOT use the Name property fallback in case it is the printer name with job id ("Printer, 123").
                 // Only use Name parsing when it contains explicit copy indicators ("3x", "(3 copie)", "copies").
                 int? nameCopies = TryParseNameProperty(target);
+                System.Diagnostics.Debug.WriteLine($"[ParseDebug] Name-based copies: {(nameCopies.HasValue ? nameCopies.Value : "null")}");
                 if (nameCopies.HasValue)
                     return nameCopies.Value;
+
+                System.Diagnostics.Debug.WriteLine($"[ParseDebug] No copies found, returning 1");
             }
             catch (Exception ex)
             {
